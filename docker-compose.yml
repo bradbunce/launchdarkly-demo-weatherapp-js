@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  launchdarkly-demo-weatherapp-js:
+    container_name: launchdarkly-demo-weatherapp-js
+    build: .
+    ports:
+      - "5173:5173"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=development

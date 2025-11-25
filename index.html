@@ -1,0 +1,1829 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge;chrome=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Weather App - LaunchDarkly Demo</title>
+    <link rel="stylesheet" href="./index.css">
+  </head>
+  <body>
+    <div class="weather-container">
+      <div id="app-content" class="loading">Initializing...</div>
+    </div>
+    <script type="module">
+    import * as LDClient from 'launchdarkly-js-client-sdk';
+    import Observe from '@launchdarkly/observability';
+    import SessionReplay from '@launchdarkly/session-replay';
+    import { onCLS, onFID, onLCP, onFCP, onTTFB, onINP } from 'web-vitals';
+    import { attachSaveLocationButton } from './src/addLocationHandler.js';
+
+    function main()
+    {
+      // Set clientSideID to your LaunchDarkly client-side ID
+      const clientSideID = import.meta.env.VITE_LD_CLIENT_SIDE_ID || '';
+
+      // Feature flag keys
+      const FLAGS = {
+        enableUserLogin: 'enable-user-login',        // Boolean: allow email login vs anonymous only
+        saveLocations: 'save-locations',             // Boolean: allow logged-in users to save favorite locations
+        rememberLocation: 'remember-location',       // Boolean: remember last searched location
+        temperatureScale: 'temperature-scale',       // Boolean: true = Fahrenheit, false = Celsius
+        windSpeedUnit: 'wind-speed-unit',            // String: 'mph', 'kph', 'ms', 'knots'
+        pressureUnit: 'pressure-unit',               // String: 'mb', 'in', 'kpa'
+        precipitationUnit: 'precipitation-unit',     // String: 'mm', 'in'
+        showAirQuality: 'show-air-quality',          // Boolean
+        showAstronomy: 'show-astronomy',             // Boolean
+        showForecast: 'show-forecast',               // Boolean: 3-day forecast
+        showHourlyForecast: 'show-hourly-forecast',  // Boolean
+        showAlerts: 'show-alerts',                   // Boolean
+        dynamicTheme: 'dynamic-weather-theme',       // Boolean
+        developerMode: 'developer-mode'              // Boolean: show Active Feature Flags section
+      };
+
+      const appContent = document.getElementById('app-content');
+
+      if (clientSideID === '') {
+        appContent.innerHTML = '<p>Please configure your LaunchDarkly client-side ID in .env file</p>';
+        return;
+      }
+
+      // User management functions
+      function getAllUsers() {
+        const usersData = localStorage.getItem('weatherAppUsers');
+        return usersData ? JSON.parse(usersData) : [];
+      }
+      
+      function saveUser(email, name) {
+        const users = getAllUsers();
+        const existingIndex = users.findIndex(u => u.email === email);
+        const profile = {
+          email: email,
+          name: name || email.split('@')[0],
+          lastLogin: new Date().toISOString()
+        };
+        
+        if (existingIndex >= 0) {
+          users[existingIndex] = profile;
+        } else {
+          users.push(profile);
+        }
+        
+        localStorage.setItem('weatherAppUsers', JSON.stringify(users));
+        // Note: This function only saves the user profile, it does NOT set them as current user
+        // Use setCurrentUser() separately if you want to switch to this user
+      }
+      
+      function getCurrentUser() {
+        const currentEmail = localStorage.getItem('weatherAppCurrentUser');
+        if (!currentEmail) return null;
+        
+        const users = getAllUsers();
+        return users.find(u => u.email === currentEmail);
+      }
+      
+      function setCurrentUser(email) {
+        localStorage.setItem('weatherAppCurrentUser', email);
+      }
+      
+      // Location management functions
+      function getSavedLocations(userEmail) {
+        const key = `weatherAppLocations_${userEmail}`;
+        const data = localStorage.getItem(key);
+        return data ? JSON.parse(data) : [];
+      }
+      
+      function saveLocation(userEmail, cityName) {
+        const locations = getSavedLocations(userEmail);
+        if (!locations.includes(cityName)) {
+          locations.push(cityName);
+          const key = `weatherAppLocations_${userEmail}`;
+          localStorage.setItem(key, JSON.stringify(locations));
+        }
+      }
+      
+      function removeLocation(userEmail, cityName) {
+        const locations = getSavedLocations(userEmail);
+        const filtered = locations.filter(loc => loc !== cityName);
+        const key = `weatherAppLocations_${userEmail}`;
+        localStorage.setItem(key, JSON.stringify(filtered));
+        
+        // If removing the default location, clear it
+        if (getDefaultLocation(userEmail) === cityName) {
+          clearDefaultLocation(userEmail);
+        }
+      }
+      
+      function getDefaultLocation(userEmail) {
+        const key = `weatherAppDefaultLocation_${userEmail}`;
+        return localStorage.getItem(key);
+      }
+      
+      function setDefaultLocation(userEmail, cityName) {
+        const key = `weatherAppDefaultLocation_${userEmail}`;
+        localStorage.setItem(key, cityName);
+      }
+      
+      function clearDefaultLocation(userEmail) {
+        const key = `weatherAppDefaultLocation_${userEmail}`;
+        localStorage.removeItem(key);
+      }
+      
+      function getCurrentLocation(userEmail) {
+        if (userEmail) {
+          const key = `weatherAppCurrentLocation_${userEmail}`;
+          return localStorage.getItem(key) || 'San Francisco';
+        } else {
+          // Anonymous user
+          return localStorage.getItem('weatherAppCurrentLocation_anonymous') || 'San Francisco';
+        }
+      }
+      
+      function setCurrentLocation(userEmail, cityName) {
+        if (userEmail) {
+          const key = `weatherAppCurrentLocation_${userEmail}`;
+          localStorage.setItem(key, cityName);
+        } else {
+          // Anonymous user
+          localStorage.setItem('weatherAppCurrentLocation_anonymous', cityName);
+        }
+      }
+      
+      // ALWAYS start with anonymous context first, regardless of localStorage state
+      // This ensures consistent flag evaluation on every app launch
+      let context = null;
+      
+      // Start bootstrap sequence with anonymous context
+      checkLoginEnabled();
+      
+      // Add reset functionality to clear all app data (global scope)
+      window.resetApp = function() {
+        if (confirm('⚠️ Reset App?\n\nThis will:\n• Clear all saved users\n• Clear current session\n• Restart the app fresh\n\nAre you sure?')) {
+          // Clear all weather app data from localStorage
+          localStorage.removeItem('weatherAppUsers');
+          localStorage.removeItem('weatherAppCurrentUser');
+          localStorage.removeItem('weatherAppAnonymous');
+          location.reload();
+        }
+      };
+      
+      // Add reset for anonymous users (just clears anonymous session)
+      window.resetAnonymous = function() {
+        if (confirm('🔄 Reset Session?\n\nThis will restart your anonymous session with a fresh LaunchDarkly context.\n\nAre you sure?')) {
+          // Only clear anonymous flag to get a new anonymous key
+          localStorage.removeItem('weatherAppAnonymous');
+          location.reload();
+        }
+      };
+      
+      // Show splash screen with app intro
+      function showSplashScreen() {
+        appContent.innerHTML = `
+          <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 60vh; text-align: center; padding: 40px 20px;">
+            <div style="font-size: 80px; margin-bottom: 20px;">🌤️</div>
+            <h1 style="font-size: 48px; margin: 0 0 10px 0; font-weight: 300;">Weather App</h1>
+            <p style="font-size: 18px; opacity: 0.9; margin: 0 0 40px 0; max-width: 500px;">
+              A real-time weather data service that demonstrates the capabilities of LaunchDarkly
+            </p>
+            <button id="enter-app-btn" disabled style="
+              padding: 16px 48px;
+              font-size: 18px;
+              background: rgba(255, 255, 255, 0.1);
+              border: 2px solid rgba(255, 255, 255, 0.2);
+              color: rgba(255, 255, 255, 0.5);
+              border-radius: 50px;
+              cursor: not-allowed;
+              transition: all 0.3s ease;
+              font-weight: 500;
+            ">
+              Preparing...
+            </button>
+            <p style="font-size: 14px; opacity: 0.6; margin-top: 40px;">
+              Powered by LaunchDarkly
+            </p>
+          </div>
+        `;
+      }
+      
+      async function checkLoginEnabled() {
+        // Show splash screen and start bootstrap in background
+        showSplashScreen();
+        
+        // Get geolocation first, before initializing SDK
+        const location = await getUserLocation();
+        
+        // Create anonymous context with location
+        const anonContext = {
+          kind: 'user',
+          anonymous: true
+        };
+        
+        if (location) {
+          anonContext.location = {
+            latitude: location.latitude,
+            longitude: location.longitude
+          };
+          console.log('[LD Context] Location added to anonymous context:', anonContext.location);
+        }
+        
+        console.log('[LD Context] Initializing SDK with anonymous context:', anonContext);
+        
+        // Initialize SDK with observability plugins
+        // The Observe plugin will automatically use your LaunchDarkly organization ID
+        const observePlugin = new Observe({
+          networkRecording: {
+            enabled: true,
+            recordHeadersAndBody: true
+          },
+          environment: 'production'
+        });
+
+        const sessionReplayPlugin = new SessionReplay({
+          privacySetting: 'default'
+        });
+
+        const checkClient = LDClient.initialize(clientSideID, anonContext, {
+          plugins: [observePlugin, sessionReplayPlugin]
+        });
+        
+        let isReady = false;
+        let currentLoginEnabled = true;
+        
+        checkClient.on('ready', () => {
+          // SDK is ready - evaluate flag and wait for user to click
+          console.log('[LD Context] SDK ready, evaluating enable-user-login flag');
+          isReady = true;
+          currentLoginEnabled = checkClient.variation(FLAGS.enableUserLogin, true);
+          console.log('[Flag Evaluation]', FLAGS.enableUserLogin, '=', currentLoginEnabled);
+          
+          // Enable the enter button now that we're ready
+          const enterBtn = document.getElementById('enter-app-btn');
+          if (enterBtn) {
+            enterBtn.disabled = false;
+            enterBtn.textContent = 'Enter App →';
+            enterBtn.style.background = 'rgba(255, 255, 255, 0.2)';
+            enterBtn.style.borderColor = 'rgba(255, 255, 255, 0.4)';
+            enterBtn.style.color = 'white';
+            enterBtn.style.cursor = 'pointer';
+            enterBtn.onmouseover = () => {
+              enterBtn.style.background = 'rgba(255, 255, 255, 0.3)';
+              enterBtn.style.borderColor = 'rgba(255, 255, 255, 0.6)';
+            };
+            enterBtn.onmouseout = () => {
+              enterBtn.style.background = 'rgba(255, 255, 255, 0.2)';
+              enterBtn.style.borderColor = 'rgba(255, 255, 255, 0.4)';
+            };
+            enterBtn.onclick = () => {
+              handleLoginEnabledState(checkClient, anonContext, currentLoginEnabled);
+            };
+          }
+        });
+        
+        // Listen for flag changes while on splash screen
+        checkClient.on('change', () => {
+          console.log('[Flag Evaluation] enable-user-login flag changed');
+          currentLoginEnabled = checkClient.variation(FLAGS.enableUserLogin, true);
+        });
+        
+        checkClient.on('failed', () => {
+          // If SDK fails, still allow user to enter with defaults
+          console.error('[LD Context] SDK initialization failed, using defaults');
+          const enterBtn = document.getElementById('enter-app-btn');
+          if (enterBtn) {
+            enterBtn.disabled = false;
+            enterBtn.textContent = 'Enter App →';
+            enterBtn.style.background = 'rgba(255, 255, 255, 0.2)';
+            enterBtn.style.borderColor = 'rgba(255, 255, 255, 0.4)';
+            enterBtn.style.color = 'white';
+            enterBtn.style.cursor = 'pointer';
+            enterBtn.onclick = () => {
+              checkClient.close();
+              showLoginScreen(true, null, anonContext);
+            };
+          }
+        });
+        
+        function handleLoginEnabledState(client, anonCtx, loginEnabled) {
+          if (loginEnabled) {
+            // Show login screen with user management (keep client open for flag updates)
+            showLoginScreen(true, client, anonCtx, observePlugin);
+          } else {
+            // Login disabled - continue as anonymous with existing client
+            console.log('[LD Context] Login disabled, proceeding with anonymous context');
+            context = anonCtx;
+            initWeatherApp(client, context, observePlugin, true);
+          }
+        }
+      }
+      
+      function showLoginScreen(loginEnabled = true, ldClient = null, anonContext = null, observePlugin = null) {
+        // NOW we can read from localStorage - SDK is already initialized
+        const users = getAllUsers();
+        
+        // Sort users by lastLogin timestamp in descending order (most recent first)
+        const sortedUsers = [...users].sort((a, b) => {
+          return new Date(b.lastLogin).getTime() - new Date(a.lastLogin).getTime();
+        });
+        
+        let usersListHTML = '';
+        let loginFormHTML = '';
+        
+        if (!loginEnabled) {
+          // Login disabled - show message and continue as anonymous
+          appContent.innerHTML = `
+            <div class="login-container">
+              <h1>🌤️ Weather App</h1>
+              <p style="margin: 20px 0; opacity: 0.9;">User login is currently disabled</p>
+              <button type="button" id="anonymous-btn" style="width: 100%; padding: 15px; font-size: 18px;">
+                Continue as Anonymous
+              </button>
+              <p style="margin-top: 20px; font-size: 14px; opacity: 0.7;">
+                Anonymous mode provides a default weather experience.
+              </p>
+            </div>
+          `;
+          
+          const anonymousBtn = document.getElementById('anonymous-btn');
+          anonymousBtn.onclick = () => {
+            // Already have anonymous client, just continue to app
+            if (ldClient) {
+              const contextToUse = anonContext || { kind: 'user', anonymous: true };
+              console.log('[LD Context] Login disabled, continuing as anonymous:', contextToUse);
+              continueWithClient(ldClient, contextToUse, observePlugin);
+            }
+          };
+          return;
+        }
+        
+        if (sortedUsers.length > 0) {
+          usersListHTML = `
+            <div class="saved-users">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h3 style="margin: 0; font-size: 18px;">Saved Users</h3>
+                <button onclick="resetApp()" class="icon-btn" style="background: rgba(255, 150, 50, 0.3) !important; border-color: rgba(255, 150, 50, 0.5) !important;" title="Clear all saved users">🔄</button>
+              </div>
+              <div class="users-list">
+                ${sortedUsers.map(user => `
+                  <div class="user-item">
+                    <div class="user-item-info" onclick="loginAsUser('${user.email}')">
+                      <div><strong>${user.name}</strong></div>
+                      <div style="font-size: 12px; opacity: 0.8;">${user.email}</div>
+                    </div>
+                    <div class="user-item-actions">
+                      <button onclick="editUser('${user.email}')" class="icon-btn" title="Edit">✏️</button>
+                      <button onclick="deleteUser('${user.email}')" class="icon-btn" title="Delete">🗑️</button>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+              <div style="margin: 20px 0; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 20px;">
+                <p style="font-size: 14px; opacity: 0.8; margin-bottom: 10px;">Or add a new user:</p>
+              </div>
+            </div>
+          `;
+        }
+        
+        appContent.innerHTML = `
+          <div class="login-container">
+            <h1>🌤️ Weather App</h1>
+            <p style="margin: 20px 0; opacity: 0.9;">Select a user or add a new one</p>
+            
+            ${usersListHTML}
+            
+            <form id="login-form">
+              <input 
+                type="email" 
+                id="email-input" 
+                placeholder="your.email@example.com" 
+                required
+                autocomplete="email"
+                style="width: 100%; padding: 15px; font-size: 16px; border: 2px solid rgba(255,255,255,0.3); border-radius: 8px; background: rgba(255,255,255,0.1); color: white; margin-bottom: 10px;"
+              >
+              <input 
+                type="text" 
+                id="name-input" 
+                placeholder="Your name (optional)" 
+                autocomplete="name"
+                style="width: 100%; padding: 15px; font-size: 16px; border: 2px solid rgba(255,255,255,0.3); border-radius: 8px; background: rgba(255,255,255,0.1); color: white; margin-bottom: 20px;"
+              >
+              <button type="submit" style="width: 100%; padding: 15px; font-size: 18px;">
+                <span id="submit-btn-text">Add User</span>
+              </button>
+              <button type="button" id="cancel-edit-btn" style="width: 100%; padding: 15px; font-size: 18px; display: none; margin-top: 10px; background: rgba(255,255,255,0.1);">
+                Cancel
+              </button>
+            </form>
+            
+            <div style="margin: 20px 0; text-align: center;">
+              <div style="border-top: 1px solid rgba(255,255,255,0.2); margin: 20px 0;"></div>
+              <button type="button" id="anonymous-btn" style="width: 100%; padding: 15px; font-size: 16px; background: rgba(255,255,255,0.05); border: 2px dashed rgba(255,255,255,0.3);">
+                Continue as Anonymous
+              </button>
+            </div>
+            
+            <p style="margin-top: 20px; font-size: 14px; opacity: 0.7;">
+              No password required. Your email is used only for personalized feature flags.
+            </p>
+          </div>
+        `;
+        
+        const form = document.getElementById('login-form');
+        const emailInput = document.getElementById('email-input');
+        const nameInput = document.getElementById('name-input');
+        const submitBtnText = document.getElementById('submit-btn-text');
+        const cancelBtn = document.getElementById('cancel-edit-btn');
+        
+        let editingEmail = null;
+        
+        // Style placeholder text
+        const style = document.createElement('style');
+        style.textContent = `
+          #email-input::placeholder, #name-input::placeholder {
+            color: rgba(255, 255, 255, 0.5);
+          }
+          #email-input:focus, #name-input:focus {
+            outline: none;
+            border-color: rgba(255, 255, 255, 0.6);
+            background: rgba(255, 255, 255, 0.15);
+          }
+        `;
+        document.head.appendChild(style);
+        
+        // Global functions for user management
+        window.loginAsUser = async function(email) {
+          console.log('[User Selection] User selected:', email);
+          setCurrentUser(email);
+          const user = getAllUsers().find(u => u.email === email);
+          if (user) {
+            user.lastLogin = new Date().toISOString();
+            saveUser(user.email, user.name);
+            console.log('[User Selection] Updated lastLogin timestamp for:', email);
+            
+            // Identify the user with the existing LD client
+            if (ldClient) {
+              const newContext = {
+                kind: 'user',
+                key: user.email,
+                email: user.email,
+                name: user.name
+              };
+              // Preserve geolocation from anonymous context
+              if (anonContext && anonContext.location) {
+                newContext.location = anonContext.location;
+                console.log('[User Selection] Preserved geolocation in user context');
+              }
+              console.log('[LD Context] Identifying user:', newContext);
+              await ldClient.identify(newContext);
+              console.log('[LD Context] User identified successfully');
+              continueWithClient(ldClient, newContext, observePlugin);
+            } else {
+              location.reload();
+            }
+          }
+        };
+        
+        window.editUser = function(email) {
+          const user = getAllUsers().find(u => u.email === email);
+          if (user) {
+            // Populate form with user data
+            emailInput.value = user.email;
+            nameInput.value = user.name;
+            
+            // Disable email field during edit
+            emailInput.disabled = true;
+            
+            // Update submit button text
+            submitBtnText.textContent = 'Update User';
+            
+            // Show cancel button
+            cancelBtn.style.display = 'block';
+            
+            // Track which user is being edited
+            editingEmail = email;
+            
+            // Focus on name input (since email is disabled)
+            nameInput.focus();
+          }
+        };
+        
+        window.deleteUser = function(email) {
+          if (confirm(`Delete user ${email}?`)) {
+            const users = getAllUsers();
+            const filtered = users.filter(u => u.email !== email);
+            localStorage.setItem('weatherAppUsers', JSON.stringify(filtered));
+            
+            // If deleting current user, clear current user
+            if (getCurrentUser()?.email === email) {
+              localStorage.removeItem('weatherAppCurrentUser');
+            }
+            
+            // Cascading deletion: Remove all associated user data
+            localStorage.removeItem(`weatherAppLocations_${email}`);
+            localStorage.removeItem(`weatherAppDefaultLocation_${email}`);
+            localStorage.removeItem(`weatherAppCurrentLocation_${email}`);
+            
+            // Refresh the login screen to reflect the removal
+            showLoginScreen(true, ldClient, anonContext, observePlugin);
+          }
+        };
+        
+        cancelBtn.onclick = () => {
+          emailInput.value = '';
+          nameInput.value = '';
+          emailInput.disabled = false;
+          submitBtnText.textContent = 'Add User';
+          cancelBtn.style.display = 'none';
+          editingEmail = null;
+        };
+        
+        form.onsubmit = async (e) => {
+          e.preventDefault();
+          const email = emailInput.value.trim();
+          const name = nameInput.value.trim();
+          
+          if (email) {
+            // Check if we're editing an existing user
+            if (editingEmail) {
+              // Update existing user profile
+              saveUser(email, name);
+              console.log('[User Creation] Updated user profile:', email);
+              
+              // Refresh the login screen to show the updated user
+              showLoginScreen(true, ldClient, anonContext, observePlugin);
+            } else {
+              // Create new user profile
+              saveUser(email, name);
+              
+              // Get the saved profile to get the derived name
+              const users = getAllUsers();
+              const savedProfile = users.find(u => u.email === email);
+              
+              console.log('[User Creation] New user created:', {
+                email: savedProfile.email,
+                name: savedProfile.name,
+                derivedName: !name // Log if name was derived
+              });
+              
+              // Identify the new user with the existing LD client
+              if (ldClient) {
+                const newContext = {
+                  kind: 'user',
+                  key: savedProfile.email,
+                  email: savedProfile.email,
+                  name: savedProfile.name
+                };
+                
+                // Preserve geolocation from anonymous context
+                if (anonContext && anonContext.location) {
+                  newContext.location = anonContext.location;
+                  console.log('[User Creation] Preserved geolocation in new user context');
+                }
+                
+                console.log('[LD Context] Identifying new user:', newContext);
+                await ldClient.identify(newContext);
+                console.log('[LD Context] New user identified successfully');
+                
+                // Set as current user and proceed to weather app
+                setCurrentUser(savedProfile.email);
+                continueWithClient(ldClient, newContext, observePlugin);
+              } else {
+                // Fallback: refresh login screen if no client
+                showLoginScreen(true, ldClient, anonContext, observePlugin);
+              }
+            }
+          }
+        };
+        
+        // Anonymous button handler
+        const anonymousBtn = document.getElementById('anonymous-btn');
+        anonymousBtn.onclick = () => {
+          // Already have anonymous client running, just continue to app
+          if (ldClient) {
+            const contextToUse = anonContext || ldClient.getContext();
+            console.log('[LD Context] Continuing as anonymous:', contextToUse);
+            continueWithClient(ldClient, contextToUse, observePlugin);
+          } else {
+            // Fallback if no client (shouldn't happen)
+            const fallbackContext = anonContext || {
+              kind: 'user',
+              anonymous: true
+            };
+            console.log('[LD Context] Fallback: initializing with anonymous context:', fallbackContext);
+            context = fallbackContext;
+            initializeApp(context);
+          }
+        };
+        
+        if (users.length === 0) {
+          emailInput.focus();
+        }
+        
+        // Listen for flag changes while on login screen (Requirement 3.4)
+        if (ldClient) {
+          const flagChangeHandler = () => {
+            const newLoginEnabled = ldClient.variation('enable-user-login', true);
+            console.log('[Flag Evaluation] enable-user-login flag changed on login screen:', newLoginEnabled);
+            
+            // Re-render the login screen with the new flag value
+            // Remove the old listener before re-rendering to avoid duplicates
+            ldClient.off('change', flagChangeHandler);
+            showLoginScreen(newLoginEnabled, ldClient, anonContext, observePlugin);
+          };
+          
+          ldClient.on('change', flagChangeHandler);
+        }
+      }
+      
+      // Continue with existing LD client after context change
+      async function continueWithClient(ldClient, newContext, observePlugin) {
+        // Don't show loading message - we're already ready and will render immediately
+        
+        // Add geolocation to context if not already there
+        if (!newContext.location) {
+          const location = await getUserLocation();
+          if (location) {
+            newContext.location = {
+              latitude: location.latitude,
+              longitude: location.longitude
+            };
+            console.log('[LD Context] User location added to context:', newContext.location);
+          }
+        }
+        
+        // Store the context globally
+        context = newContext;
+        
+        console.log('[LD Context] Continuing with client, context:', context);
+        
+        // The client is already ready, start the app immediately
+        initWeatherApp(ldClient, context, observePlugin, true); // Pass true to indicate client is already ready
+      }
+      
+      // Get user's geolocation and add to context
+      function getUserLocation() {
+        return new Promise((resolve) => {
+          if ('geolocation' in navigator) {
+            navigator.geolocation.getCurrentPosition(
+              (position) => {
+                const location = {
+                  latitude: position.coords.latitude,
+                  longitude: position.coords.longitude,
+                  accuracy: position.coords.accuracy
+                };
+                console.log('[Geolocation] Location obtained:', location);
+                resolve(location);
+              },
+              (error) => {
+                console.warn('[Geolocation] Error:', error.message);
+                resolve(null);
+              },
+              { timeout: 5000, maximumAge: 300000 } // 5s timeout, cache for 5 min
+            );
+          } else {
+            console.warn('[Geolocation] Not supported');
+            resolve(null);
+          }
+        });
+      }
+      
+      async function initializeApp(newContext) {
+        appContent.innerHTML = '<p class="loading">Loading...</p>';
+        
+        // Try to get user's geolocation and add to context (if not already there)
+        if (!newContext.location) {
+          const location = await getUserLocation();
+          if (location) {
+            newContext.location = {
+              latitude: location.latitude,
+              longitude: location.longitude
+            };
+            console.log('[LD Context] User location added to context:', newContext.location);
+          }
+        }
+        context = newContext;
+        console.log('[LD Context] Initializing SDK with context:', context);
+
+        // Initialize SDK with observability plugins
+        // The Observe plugin will automatically use your LaunchDarkly organization ID
+        const observePlugin = new Observe({
+          networkRecording: {
+            enabled: true,
+            recordHeadersAndBody: true
+          },
+          environment: 'production'
+        });
+
+        const sessionReplayPlugin = new SessionReplay({
+          privacySetting: 'default'
+        });
+
+        const ldclient = LDClient.initialize(clientSideID, context, {
+          plugins: [observePlugin, sessionReplayPlugin]
+        });
+
+        ldclient.on('initialized', () => {
+          console.log('SDK initialized');
+          // Keep showing "Loading..." - no need to update UI here
+        });
+        ldclient.on('failed', () => {
+          console.error('SDK failed to initialize');
+          appContent.innerHTML = '<p class="loading">Failed to initialize</p>';
+        });
+        
+        // Use waitUntilReady to ensure we catch the ready state
+        ldclient.waitUntilReady().then(() => {
+          console.log('SDK ready, starting weather app');
+          initWeatherApp(ldclient, context);
+        }).catch((error) => {
+          console.error('SDK failed to become ready:', error);
+          appContent.innerHTML = '<p class="loading">SDK failed to become ready</p>';
+        });
+      }
+      
+      function initWeatherApp(ldclient, context, observePlugin, isReady = false) {
+        console.log('initWeatherApp called with context:', context, 'isReady:', isReady);
+        console.log('Client waitUntilReady state:', ldclient.waitUntilReady);
+        
+        // Weather API configuration
+        const weatherApiKey = import.meta.env.VITE_WEATHER_API_KEY || '';
+        let weatherData = null;
+
+      // Fetch comprehensive weather data from WeatherAPI
+      async function fetchWeather(city = 'San Francisco') {
+        const showAirQuality = ldclient.variation(FLAGS.showAirQuality, false);
+        const showAstronomy = ldclient.variation(FLAGS.showAstronomy, false);
+        const showForecast = ldclient.variation(FLAGS.showForecast, false);
+        const showAlerts = ldclient.variation(FLAGS.showAlerts, false);
+        
+        if (!weatherApiKey) {
+          console.warn('Weather API key not configured, using mock data');
+          return getMockWeatherData();
+        }
+
+        try {
+          // Don't update UI here - weather loads quickly and we don't want flashing messages
+          
+          // Build API URL based on feature flags
+          let apiUrl;
+          if (showForecast) {
+            apiUrl = `https://api.weatherapi.com/v1/forecast.json?key=${weatherApiKey}&q=${city}&days=3&aqi=${showAirQuality ? 'yes' : 'no'}&alerts=${showAlerts ? 'yes' : 'no'}`;
+          } else {
+            apiUrl = `https://api.weatherapi.com/v1/current.json?key=${weatherApiKey}&q=${city}&aqi=${showAirQuality ? 'yes' : 'no'}`;
+          }
+          
+          console.log('[WeatherAPI] Fetching weather data for:', city);
+          const response = await fetch(apiUrl);
+          
+          if (!response.ok) {
+            throw new Error(`Weather API error: ${response.status}`);
+          }
+
+          const data = await response.json();
+          console.log('[WeatherAPI Response] Complete response body:', data);
+          
+          // Fetch astronomy data separately if needed
+          let astronomyData = null;
+          if (showAstronomy) {
+            try {
+              console.log('[WeatherAPI] Fetching astronomy data for:', city);
+              const astroResponse = await fetch(`https://api.weatherapi.com/v1/astronomy.json?key=${weatherApiKey}&q=${city}&dt=${data.location.localtime.split(' ')[0]}`);
+              if (astroResponse.ok) {
+                astronomyData = await astroResponse.json();
+                console.log('[WeatherAPI Response] Astronomy data:', astronomyData);
+              }
+            } catch (e) {
+              console.warn('[WeatherAPI] Failed to fetch astronomy data:', e);
+            }
+          }
+          
+          return parseWeatherData(data, astronomyData);
+        } catch (error) {
+          console.error('Failed to fetch weather:', error);
+          observePlugin.observe?.recordError(
+            error,
+            'Failed to fetch weather data from WeatherAPI',
+            { city: city }
+          );
+          return getMockWeatherData();
+        }
+      }
+      
+      function getMockWeatherData() {
+        return {
+          city: 'San Francisco',
+          region: 'California',
+          country: 'United States',
+          latitude: 37.7749,
+          longitude: -122.4194,
+          tempC: 18,
+          tempF: 64,
+          condition: 'Partly Cloudy',
+          icon: '⛅',
+          humidity: 65,
+          windMph: 12,
+          windKph: 19,
+          windMs: 5.4,
+          windKnots: 10.4,
+          pressureMb: 1013,
+          pressureIn: 29.91,
+          pressureKpa: 101.3,
+          precipMm: 0,
+          precipIn: 0,
+          feelsLikeC: 16,
+          feelsLikeF: 61,
+          uvIndex: 5,
+          visibility: 10,
+          cloudCover: 50,
+          localTime: new Date().toISOString().slice(0, 16).replace('T', ' '),
+          timezone: 'America/Los_Angeles',
+          airQuality: null,
+          astronomy: null,
+          forecast: null,
+          hourly: null,
+          alerts: null
+        };
+      }
+      
+      function parseWeatherData(data, astronomyData) {
+        const conditionMap = {
+          'Sunny': '☀️', 'Clear': '🌙', 'Partly cloudy': '⛅',
+          'Cloudy': '☁️', 'Overcast': '☁️', 'Mist': '🌫️',
+          'Fog': '🌫️', 'Rain': '🌧️', 'Light rain': '🌦️',
+          'Heavy rain': '⛈️', 'Snow': '❄️', 'Thunderstorm': '⛈️'
+        };
+        
+        const current = data.current;
+        const location = data.location;
+        
+        return {
+          city: location.name,
+          region: location.region,
+          country: location.country,
+          latitude: location.lat,
+          longitude: location.lon,
+          tempC: current.temp_c,
+          tempF: current.temp_f,
+          condition: current.condition.text,
+          icon: conditionMap[current.condition.text] || '🌤️',
+          humidity: current.humidity,
+          windMph: Math.round(current.wind_mph),
+          windKph: Math.round(current.wind_kph),
+          windMs: Math.round(current.wind_kph / 3.6 * 10) / 10,
+          windKnots: Math.round(current.wind_mph * 0.868976 * 10) / 10,
+          pressureMb: current.pressure_mb,
+          pressureIn: current.pressure_in,
+          pressureKpa: Math.round(current.pressure_mb / 10 * 10) / 10,
+          precipMm: current.precip_mm,
+          precipIn: current.precip_in,
+          feelsLikeC: current.feelslike_c,
+          feelsLikeF: current.feelslike_f,
+          uvIndex: current.uv,
+          visibility: current.vis_km,
+          cloudCover: current.cloud,
+          localTime: location.localtime,
+          timezone: location.tz_id,
+          airQuality: current.air_quality || null,
+          astronomy: astronomyData ? astronomyData.astronomy.astro : null,
+          forecast: data.forecast ? data.forecast.forecastday : null,
+          hourly: data.forecast ? data.forecast.forecastday[0].hour : null,
+          alerts: data.alerts ? data.alerts.alert : null
+        };
+      }
+
+      // Apply theme based on weather condition
+      function applyWeatherTheme(condition, useDynamicTheme) {
+        const themes = {
+          'Sunny': 'linear-gradient(135deg, #56CCF2 0%, #2F80ED 100%)',
+          'Clear': 'linear-gradient(135deg, #1e3c72 0%, #2a5298 100%)',
+          'Partly cloudy': 'linear-gradient(135deg, #4b79a1 0%, #283e51 100%)',
+          'Cloudy': 'linear-gradient(135deg, #bdc3c7 0%, #2c3e50 100%)',
+          'Overcast': 'linear-gradient(135deg, #757f9a 0%, #d7dde8 100%)',
+          'Mist': 'linear-gradient(135deg, #606c88 0%, #3f4c6b 100%)',
+          'Fog': 'linear-gradient(135deg, #606c88 0%, #3f4c6b 100%)',
+          'Rain': 'linear-gradient(135deg, #2c3e50 0%, #3498db 100%)',
+          'Light rain': 'linear-gradient(135deg, #4b6cb7 0%, #182848 100%)',
+          'Heavy rain': 'linear-gradient(135deg, #141e30 0%, #243b55 100%)',
+          'Snow': 'linear-gradient(135deg, #e6dada 0%, #274046 100%)',
+          'Thunderstorm': 'linear-gradient(135deg, #232526 0%, #414345 100%)'
+        };
+
+        if (useDynamicTheme) {
+          const gradient = themes[condition] || themes['Clear'];
+          document.body.style.background = gradient;
+        } else {
+          // Static Ocean Blue theme
+          document.body.style.background = 'linear-gradient(135deg, #1e3c72 0%, #2a5298 50%, #7e8ba3 100%)';
+        }
+      }
+
+      // Store the current weather query (coordinates or city name) for refreshes
+      let currentWeatherQuery = null;
+      
+      async function render() {
+        // Get initial city based on user type and flags
+        if (!weatherData) {
+          console.log('[Weather] Determining initial location...');
+          let initialCity = 'San Francisco';
+          let useGeolocation = false;
+          
+          if (context.anonymous) {
+            // Anonymous: always use current geolocation
+            console.log('[Weather] Anonymous user - using geolocation');
+            useGeolocation = true;
+          } else if (context.email) {
+            // Logged-in: check if they have a default location set
+            const defaultLoc = getDefaultLocation(context.email);
+            if (defaultLoc) {
+              // Has default location - use it
+              console.log('[Weather] Using saved default location:', defaultLoc);
+              initialCity = defaultLoc;
+            } else {
+              // No default location - use current geolocation
+              console.log('[Weather] No default location - using geolocation');
+              useGeolocation = true;
+            }
+          }
+          
+          if (useGeolocation && context.location) {
+            try {
+              // Use coordinates directly with WeatherAPI
+              const coords = `${context.location.latitude},${context.location.longitude}`;
+              console.log('[Weather] Fetching weather by coordinates:', coords);
+              currentWeatherQuery = coords; // Store for refreshes
+              weatherData = await fetchWeather(coords);
+              console.log('[Weather] Weather data loaded successfully');
+              // Don't return - continue to render the UI
+            } catch (error) {
+              console.warn('[Weather] Failed to fetch weather by coordinates, using default:', error);
+              // Fall through to fetch by city name
+              console.log('[Weather] Fetching weather for city:', initialCity);
+              currentWeatherQuery = initialCity; // Store for refreshes
+              weatherData = await fetchWeather(initialCity);
+              console.log('[Weather] Weather data loaded successfully');
+            }
+          } else if (!useGeolocation) {
+            // Not using geolocation, fetch by city name
+            console.log('[Weather] Fetching weather for city:', initialCity);
+            currentWeatherQuery = initialCity; // Store for refreshes
+            weatherData = await fetchWeather(initialCity);
+            console.log('[Weather] Weather data loaded successfully');
+          }
+        }
+
+        // Get all flag values
+        const useFahrenheit = ldclient.variation(FLAGS.temperatureScale, false);
+        const windUnit = ldclient.variation(FLAGS.windSpeedUnit, 'mph');
+        const pressureUnit = ldclient.variation(FLAGS.pressureUnit, 'mb');
+        const precipUnit = ldclient.variation(FLAGS.precipitationUnit, 'mm');
+        const showAirQuality = ldclient.variation(FLAGS.showAirQuality, false);
+        const showAstronomy = ldclient.variation(FLAGS.showAstronomy, false);
+        const showForecast = ldclient.variation(FLAGS.showForecast, false);
+        const showHourly = ldclient.variation(FLAGS.showHourlyForecast, false);
+        const showAlerts = ldclient.variation(FLAGS.showAlerts, false);
+        const useDynamicTheme = ldclient.variation(FLAGS.dynamicTheme, false);
+        const developerMode = ldclient.variation(FLAGS.developerMode, false);
+        
+        // Apply theme
+        applyWeatherTheme(weatherData.condition, useDynamicTheme);
+        
+        // Get temperature values based on flag
+        const temp = useFahrenheit ? weatherData.tempF : weatherData.tempC;
+        const feelsLike = useFahrenheit ? weatherData.feelsLikeF : weatherData.feelsLikeC;
+        const tempUnit = useFahrenheit ? '°F' : '°C';
+        
+        // Get wind speed based on unit
+        const windMap = { mph: weatherData.windMph, kph: weatherData.windKph, ms: weatherData.windMs, knots: weatherData.windKnots };
+        const windUnitMap = { mph: 'mph', kph: 'km/h', ms: 'm/s', knots: 'knots' };
+        const windSpeed = windMap[windUnit];
+        const windUnitLabel = windUnitMap[windUnit];
+        
+        // Get pressure based on unit
+        const pressureMap = { mb: weatherData.pressureMb, in: weatherData.pressureIn, kpa: weatherData.pressureKpa };
+        const pressureUnitMap = { mb: 'mb', in: 'inHg', kpa: 'kPa' };
+        const pressure = pressureMap[pressureUnit];
+        const pressureLabel = pressureUnitMap[pressureUnit];
+        
+        // Get precipitation based on unit
+        const precipMap = { mm: weatherData.precipMm, in: weatherData.precipIn };
+        const precipUnitMap = { mm: 'mm', in: 'in' };
+        const precip = precipMap[precipUnit];
+        const precipLabel = precipUnitMap[precipUnit];
+        
+        // Format local time
+        const localDate = new Date(weatherData.localTime);
+        const timeStr = localDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+        const dateStr = localDate.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+        
+        // Build HTML
+        const displayName = context.anonymous ? '🕶️ Anonymous' : `👤 ${context.name}`;
+        const loginEnabled = ldclient.variation(FLAGS.enableUserLogin, true);
+        
+        let headerButtons = '';
+        if (context.anonymous) {
+          // Anonymous user - show login (if enabled) and reset
+          if (loginEnabled) {
+            headerButtons = `<button onclick="loginFromAnonymous()" class="login-btn" title="Login for personalized experience">Login</button>
+                            <button onclick="resetAnonymous()" class="icon-btn" title="Reset Session">🔄</button>`;
+          } else {
+            headerButtons = `<button onclick="resetAnonymous()" class="icon-btn" title="Reset Session">🔄</button>`;
+          }
+        } else {
+          // Logged in user - show switch user and logout
+          headerButtons = `<button onclick="switchUser()" class="manage-btn" title="Switch User">👥</button>
+                          <button onclick="logout()" class="logout-btn">Logout</button>`;
+        }
+        
+        let html = `
+          <div class="user-header">
+            <div class="user-info">
+              <span>${displayName}</span>
+              <div style="display: flex; gap: 5px;">
+                ${headerButtons}
+              </div>
+            </div>
+          </div>
+          
+          <div class="location-selector">
+            <input type="text" id="city-input" placeholder="Enter city name..." value="${weatherData.city}">
+            <button id="search-button">🔍</button>
+            ${context.location ? '<button id="current-location-button" title="Show current location">📍</button>' : ''}
+          </div>`;
+        
+        // Show saved locations for logged-in users if flag is enabled
+        const canSaveLocations = ldclient.variation(FLAGS.saveLocations, false);
+        const rememberLocation = ldclient.variation(FLAGS.rememberLocation, false);
+        if (!context.anonymous && context.email && canSaveLocations) {
+          const savedLocations = getSavedLocations(context.email);
+          const defaultLoc = getDefaultLocation(context.email);
+          if (savedLocations.length > 0) {
+            html += `
+              <div class="saved-locations">
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin: 15px 0;">
+                  ${savedLocations.map(loc => {
+                    const isDefault = rememberLocation && defaultLoc === loc;
+                    return `
+                      <div class="location-chip ${isDefault ? 'default-location' : ''}">
+                        <span onclick="switchToLocation('${loc}')" style="cursor: pointer;">${isDefault ? '⭐ ' : ''}${loc}</span>
+                        ${rememberLocation ? `<button onclick="setAsDefault('${loc}')" style="background: none; border: none; color: white; cursor: pointer; padding: 0 5px; opacity: 0.7;" title="Set as default">⭐</button>` : ''}
+                        <button onclick="removeSavedLocation('${loc}')" style="background: none; border: none; color: white; cursor: pointer; padding: 0 0 0 5px; opacity: 0.7;">×</button>
+                      </div>
+                    `;
+                  }).join('')}
+                </div>
+              </div>
+            `;
+          }
+        }
+        
+        html += `
+          <h1 class="city-name">${weatherData.city}${weatherData.region ? ', ' + weatherData.region : ''}</h1>
+          <p class="date">${weatherData.country} • 🕐 ${timeStr}</p>
+          <p class="date">${dateStr}</p>
+          
+          <div class="weather-icon">${weatherData.icon}</div>
+          
+          <div class="temperature">
+            ${temp}<span class="temperature-unit">${tempUnit}</span>
+          </div>
+          
+          <p class="weather-description">${weatherData.condition}</p>
+          
+          <div class="weather-details">
+            <div class="detail-item">
+              <span class="detail-label">Feels Like</span>
+              <span class="detail-value">${feelsLike}${tempUnit}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Humidity</span>
+              <span class="detail-value">${weatherData.humidity}%</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Wind</span>
+              <span class="detail-value">${windSpeed} ${windUnitLabel}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Pressure</span>
+              <span class="detail-value">${pressure} ${pressureLabel}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Precipitation</span>
+              <span class="detail-value">${precip} ${precipLabel}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">UV Index</span>
+              <span class="detail-value">${weatherData.uvIndex}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Visibility</span>
+              <span class="detail-value">${weatherData.visibility} km</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Cloud Cover</span>
+              <span class="detail-value">${weatherData.cloudCover}%</span>
+            </div>
+          </div>
+        `;
+        
+        // Air Quality section
+        if (showAirQuality && weatherData.airQuality) {
+          const aqi = weatherData.airQuality;
+          const aqiUS = aqi['us-epa-index'] || aqi.pm2_5 || 'N/A';
+          html += `
+            <div class="feature-section">
+              <h3>🌫️ Air Quality</h3>
+              <div class="weather-details">
+                <div class="detail-item">
+                  <span class="detail-label">AQI (US EPA)</span>
+                  <span class="detail-value">${aqiUS}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">PM2.5</span>
+                  <span class="detail-value">${aqi.pm2_5 || 'N/A'}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">PM10</span>
+                  <span class="detail-value">${aqi.pm10 || 'N/A'}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">O₃</span>
+                  <span class="detail-value">${aqi.o3 || 'N/A'}</span>
+                </div>
+              </div>
+            </div>
+          `;
+        }
+        
+        // Astronomy section
+        if (showAstronomy && weatherData.astronomy) {
+          const astro = weatherData.astronomy;
+          html += `
+            <div class="feature-section">
+              <h3>🌅 Astronomy</h3>
+              <div class="weather-details">
+                <div class="detail-item">
+                  <span class="detail-label">Sunrise</span>
+                  <span class="detail-value">${astro.sunrise}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">Sunset</span>
+                  <span class="detail-value">${astro.sunset}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">Moonrise</span>
+                  <span class="detail-value">${astro.moonrise}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">Moonset</span>
+                  <span class="detail-value">${astro.moonset}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">Moon Phase</span>
+                  <span class="detail-value">${astro.moon_phase}</span>
+                </div>
+              </div>
+            </div>
+          `;
+        }
+        
+        // Hourly Forecast section
+        if (showHourly && weatherData.hourly) {
+          const now = new Date();
+          const nextHours = weatherData.hourly.filter(h => new Date(h.time) >= now).slice(0, 6);
+          html += `
+            <div class="feature-section">
+              <h3>⏰ Hourly Forecast</h3>
+              <div class="hourly-forecast">
+          `;
+          nextHours.forEach(hour => {
+            const hourTime = new Date(hour.time).toLocaleTimeString('en-US', { hour: 'numeric', hour12: true });
+            const hourTemp = useFahrenheit ? hour.temp_f : hour.temp_c;
+            html += `
+              <div class="hourly-item">
+                <div>${hourTime}</div>
+                <div style="font-size: 1.5em;">${hour.condition.text.includes('rain') ? '🌧️' : hour.condition.text.includes('cloud') ? '☁️' : '☀️'}</div>
+                <div><strong>${hourTemp}${tempUnit}</strong></div>
+              </div>
+            `;
+          });
+          html += `</div></div>`;
+        }
+        
+        // 3-Day Forecast section
+        if (showForecast && weatherData.forecast) {
+          html += `
+            <div class="feature-section">
+              <h3>📅 3-Day Forecast</h3>
+              <div class="forecast-container">
+          `;
+          weatherData.forecast.forEach(day => {
+            const dayName = new Date(day.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+            const maxTemp = useFahrenheit ? day.day.maxtemp_f : day.day.maxtemp_c;
+            const minTemp = useFahrenheit ? day.day.mintemp_f : day.day.mintemp_c;
+            html += `
+              <div class="forecast-day">
+                <div><strong>${dayName}</strong></div>
+                <div style="font-size: 2em; margin: 10px 0;">${day.day.condition.text.includes('rain') ? '🌧️' : day.day.condition.text.includes('cloud') ? '☁️' : '☀️'}</div>
+                <div>${day.day.condition.text}</div>
+                <div style="margin-top: 10px;"><strong>${maxTemp}${tempUnit}</strong> / ${minTemp}${tempUnit}</div>
+                <div style="font-size: 0.9em; color: #ccc;">💧 ${precipUnit === 'mm' ? day.day.totalprecip_mm : day.day.totalprecip_in} ${precipLabel}</div>
+              </div>
+            `;
+          });
+          html += `</div></div>`;
+        }
+        
+        // Alerts section
+        if (showAlerts && weatherData.alerts && weatherData.alerts.length > 0) {
+          html += `<div class="feature-section"><h3>⚠️ Weather Alerts</h3>`;
+          weatherData.alerts.forEach(alert => {
+            html += `
+              <div class="alert-box">
+                <strong>${alert.headline}</strong>
+                <p>${alert.desc}</p>
+                <small>Effective: ${alert.effective} - Expires: ${alert.expires}</small>
+              </div>
+            `;
+          });
+          html += `</div>`;
+        }
+        
+        // Only show Active Feature Flags section if developer-mode is enabled
+        if (developerMode) {
+          html += `
+            <div class="flag-status">
+              <h4>🚩 Active Feature Flags</h4>
+              <code>${FLAGS.enableUserLogin}</code> = <strong>${loginEnabled}</strong> ${context.anonymous ? '(checked at startup)' : ''}<br>
+              <code>${FLAGS.saveLocations}</code> = <strong>${canSaveLocations}</strong> ${context.anonymous ? '(logged-in users only)' : ''}<br>
+              <code>${FLAGS.rememberLocation}</code> = <strong>${rememberLocation}</strong><br>
+              <code>${FLAGS.temperatureScale}</code> = <strong>${useFahrenheit}</strong> (${useFahrenheit ? 'Fahrenheit' : 'Celsius'})<br>
+              <code>${FLAGS.windSpeedUnit}</code> = <strong>${windUnit}</strong><br>
+              <code>${FLAGS.pressureUnit}</code> = <strong>${pressureUnit}</strong><br>
+              <code>${FLAGS.precipitationUnit}</code> = <strong>${precipUnit}</strong><br>
+              <code>${FLAGS.showAirQuality}</code> = <strong>${showAirQuality}</strong><br>
+              <code>${FLAGS.showAstronomy}</code> = <strong>${showAstronomy}</strong><br>
+              <code>${FLAGS.showForecast}</code> = <strong>${showForecast}</strong><br>
+              <code>${FLAGS.showHourlyForecast}</code> = <strong>${showHourly}</strong><br>
+              <code>${FLAGS.showAlerts}</code> = <strong>${showAlerts}</strong><br>
+              <code>${FLAGS.dynamicTheme}</code> = <strong>${useDynamicTheme}</strong><br>
+              <code>${FLAGS.developerMode}</code> = <strong>${developerMode}</strong>
+            </div>
+          `;
+        }
+        
+        // Always show the test error button (for observability testing)
+        html += `
+          <div>
+            <button id="error-button">🐛 Record Test Error</button>
+          </div>
+        `;
+        
+        appContent.innerHTML = html;
+
+        // Add location search handler
+        const searchButton = document.getElementById('search-button');
+        const cityInput = document.getElementById('city-input');
+        const currentLocationButton = document.getElementById('current-location-button');
+        
+        const handleSearch = async () => {
+          const city = cityInput.value.trim();
+          if (city) {
+            currentWeatherQuery = city; // Update stored query
+            weatherData = await fetchWeather(city);
+            // Only save location for logged-in users with remember-location enabled
+            if (!context.anonymous && context.email) {
+              const rememberLocation = ldclient.variation(FLAGS.rememberLocation, false);
+              if (rememberLocation) {
+                setCurrentLocation(context.email, weatherData.city);
+              }
+            }
+            render();
+          }
+        };
+
+        searchButton.onclick = handleSearch;
+        cityInput.onkeypress = (e) => {
+          if (e.key === 'Enter') {
+            handleSearch();
+          }
+        };
+        
+        // Add current location button handler
+        if (currentLocationButton) {
+          currentLocationButton.onclick = async () => {
+            if (context.location) {
+              const coords = `${context.location.latitude},${context.location.longitude}`;
+              currentWeatherQuery = coords; // Update stored query
+              weatherData = await fetchWeather(coords);
+              render();
+            }
+          };
+        }
+        
+        // Add save location button for logged-in users using the new module
+        attachSaveLocationButton(context, weatherData, ldclient, render);
+        
+        // Global handlers for location management
+        window.switchToLocation = async function(city) {
+          currentWeatherQuery = city; // Update stored query
+          weatherData = await fetchWeather(city);
+          // Only save location for logged-in users with remember-location enabled
+          if (!context.anonymous && context.email) {
+            const rememberLocation = ldclient.variation(FLAGS.rememberLocation, false);
+            if (rememberLocation) {
+              setCurrentLocation(context.email, city);
+            }
+          }
+          render();
+        };
+        
+        window.removeSavedLocation = function(city) {
+          if (confirm(`Remove ${city} from saved locations?`)) {
+            if (!context.anonymous && context.email) {
+              removeLocation(context.email, city);
+            }
+            render();
+          }
+        };
+        
+        window.setAsDefault = function(city) {
+          if (!context.anonymous && context.email) {
+            setDefaultLocation(context.email, city);
+            render();
+          }
+        };
+        
+        // Override loginFromAnonymous to show login screen instead of reloading
+        window.loginFromAnonymous = function() {
+          console.log('[LD Context] Anonymous user requesting login screen');
+          // Get the current anonymous context from the client
+          const anonContext = ldclient.getContext();
+          // Show the login screen with the current client and context
+          showLoginScreen(true, ldclient, anonContext, observePlugin);
+        };
+        
+        // Override logout to re-identify as anonymous and show login screen
+        window.logout = async function() {
+          console.log('[LD Context] User logging out, switching to anonymous');
+          localStorage.removeItem('weatherAppCurrentUser');
+          localStorage.removeItem('weatherAppAnonymous');
+          
+          // Create anonymous context with preserved geolocation
+          const anonContext = {
+            kind: 'user',
+            anonymous: true
+          };
+          
+          if (context.location) {
+            anonContext.location = context.location;
+          }
+          
+          // Re-identify as anonymous
+          await ldclient.identify(anonContext);
+          console.log('[LD Context] Re-identified as anonymous');
+          
+          // Update global context
+          context = anonContext;
+          
+          // Show login screen
+          showLoginScreen(true, ldclient, anonContext, observePlugin);
+        };
+        
+        // Override switchToUser to re-identify and continue in app
+        window.switchToUser = async function(email) {
+          console.log('[LD Context] Switching to user:', email);
+          setCurrentUser(email);
+          localStorage.removeItem('weatherAppAnonymous'); // Clear anonymous flag
+          const user = getAllUsers().find(u => u.email === email);
+          if (user) {
+            user.lastLogin = new Date().toISOString();
+            saveUser(user.email, user.name);
+            
+            // Create new user context with preserved geolocation
+            const newContext = {
+              kind: 'user',
+              key: user.email,
+              email: user.email,
+              name: user.name
+            };
+            
+            if (context.location) {
+              newContext.location = context.location;
+            }
+            
+            // Re-identify as the new user
+            await ldclient.identify(newContext);
+            console.log('[LD Context] Re-identified as user:', user.email);
+            
+            // Update global context
+            context = newContext;
+            
+            // Reset weather data so it fetches fresh for the new user
+            weatherData = null;
+            
+            // Re-render the app with the new user context
+            render();
+            
+            // Close the user switcher modal if it's open
+            closeUserSwitcher();
+          }
+        };
+        
+        // Override switchToAnonymous to re-identify and continue in app
+        window.switchToAnonymous = async function() {
+          console.log('[LD Context] Switching to anonymous');
+          localStorage.removeItem('weatherAppCurrentUser');
+          localStorage.setItem('weatherAppAnonymous', 'true');
+          
+          // Create anonymous context with preserved geolocation
+          const anonContext = {
+            kind: 'user',
+            anonymous: true
+          };
+          
+          if (context.location) {
+            anonContext.location = context.location;
+          }
+          
+          // Re-identify as anonymous
+          await ldclient.identify(anonContext);
+          console.log('[LD Context] Re-identified as anonymous');
+          
+          // Update global context
+          context = anonContext;
+          
+          // Reset weather data so it fetches fresh
+          weatherData = null;
+          
+          // Re-render the app
+          render();
+          
+          // Close the user switcher modal
+          closeUserSwitcher();
+        };
+
+        // Add error recording button handler (always available for observability testing)
+        const errorButton = document.getElementById('error-button');
+        if (errorButton) {
+          errorButton.onclick = () => {
+            const errorScenarios = [
+              { message: 'Failed to load user preferences', context: 'User settings could not be retrieved from storage', type: 'StorageError' },
+              { message: 'Network timeout while fetching data', context: 'API request exceeded 30 second timeout', type: 'NetworkError' },
+              { message: 'Invalid JSON response from server', context: 'Server returned malformed data', type: 'ParseError' },
+              { message: 'Authentication token expired', context: 'User session has expired and needs to re-authenticate', type: 'AuthError' },
+              { message: 'Database connection failed', context: 'Unable to establish connection to database', type: 'DatabaseError' },
+              { message: 'File upload size exceeded limit', context: 'Attempted to upload file larger than 10MB', type: 'ValidationError' }
+            ];
+
+            const scenario = errorScenarios[Math.floor(Math.random() * errorScenarios.length)];
+            const testError = new Error(scenario.message);
+            testError.name = scenario.type;
+            
+            observePlugin.observe?.recordError(testError, scenario.context, { 
+              useFahrenheit: useFahrenheit,
+              windUnit: windUnit,
+              errorType: scenario.type,
+              timestamp: new Date().toISOString()
+            });
+            alert(`${scenario.type} recorded! Check your LaunchDarkly Observability dashboard.`);
+          };
+        }
+      }
+
+      ldclient.on('initialized', () => {
+        // Keep showing "Loading..." - no need to update UI here
+      });
+      ldclient.on('failed', () => {
+        appContent.innerHTML = '<p class="loading">Failed to initialize</p>';
+      });
+      // Set up automatic weather refresh at the top of every minute
+      function scheduleWeatherRefresh() {
+        const now = new Date();
+        const msUntilNextMinute = (60 - now.getSeconds()) * 1000 - now.getMilliseconds();
+        
+        // Schedule first refresh at the top of the next minute
+        setTimeout(async () => {
+          // Use the stored query (coordinates or city name) to maintain location accuracy
+          weatherData = await fetchWeather(currentWeatherQuery || 'San Francisco');
+          render();
+          
+          // Then refresh every 60 seconds
+          setInterval(async () => {
+            weatherData = await fetchWeather(currentWeatherQuery || 'San Francisco');
+            render();
+          }, 60000);
+        }, msUntilNextMinute);
+      }
+      
+      // Track Web Vitals and send to LaunchDarkly Observability
+      function sendWebVitalToObservability(metric) {
+        console.log(`Web Vital - ${metric.name}:`, metric.value);
+        
+        if (observePlugin && observePlugin.observe) {
+          observePlugin.observe.recordHistogram({
+            name: `web.vitals.${metric.name.toLowerCase()}`,
+            value: metric.value,
+            attributes: {
+              rating: metric.rating,
+              navigationType: metric.navigationType || 'unknown',
+              useFahrenheit: ldclient.variation(FLAGS.temperatureScale, false),
+              showAirQuality: ldclient.variation(FLAGS.showAirQuality, false),
+              showForecast: ldclient.variation(FLAGS.showForecast, false)
+            }
+          });
+          console.log(`✓ Sent ${metric.name} to LaunchDarkly Observability`);
+        } else {
+          console.warn(`✗ observePlugin.observe not available for ${metric.name}`);
+        }
+      }
+
+      // Wait for SDK to be ready, then render
+      if (isReady) {
+        // Client is already ready (after identify), render immediately
+        console.log('SDK already ready, rendering immediately');
+        render();
+        scheduleWeatherRefresh();
+        
+        // Monitor all Core Web Vitals
+        onCLS(sendWebVitalToObservability);  // Cumulative Layout Shift
+        onFID(sendWebVitalToObservability);  // First Input Delay (deprecated but still tracked)
+        onINP(sendWebVitalToObservability);  // Interaction to Next Paint
+        onLCP(sendWebVitalToObservability);  // Largest Contentful Paint
+        onFCP(sendWebVitalToObservability);  // First Contentful Paint
+        onTTFB(sendWebVitalToObservability); // Time to First Byte
+      } else {
+        // Client is not ready yet, wait for it
+        ldclient.waitUntilReady().then(() => {
+          console.log('SDK ready in initWeatherApp, rendering now');
+          render();
+          scheduleWeatherRefresh();
+          
+          // Monitor all Core Web Vitals
+          onCLS(sendWebVitalToObservability);  // Cumulative Layout Shift
+          onFID(sendWebVitalToObservability);  // First Input Delay (deprecated but still tracked)
+          onINP(sendWebVitalToObservability);  // Interaction to Next Paint
+          onLCP(sendWebVitalToObservability);  // Largest Contentful Paint
+          onFCP(sendWebVitalToObservability);  // First Contentful Paint
+          onTTFB(sendWebVitalToObservability); // Time to First Byte
+        }).catch((error) => {
+          console.error('SDK failed to become ready in initWeatherApp:', error);
+          appContent.innerHTML = '<p class="loading">Failed to load weather app</p>';
+        });
+      }
+      
+      ldclient.on('change', render);
+      
+      // Add logout functionality - switches back to user selection
+      window.logout = function() {
+        localStorage.removeItem('weatherAppCurrentUser');
+        localStorage.removeItem('weatherAppAnonymous');
+        location.reload();
+      };
+      
+      // Add user switcher functionality
+      window.switchUser = function() {
+        const users = getAllUsers();
+        const currentUser = getCurrentUser();
+        // You're anonymous only if there's NO current user
+        const isAnonymous = !currentUser;
+        
+        let userList = '';
+        
+        // Add anonymous option
+        if (isAnonymous) {
+          userList += '<div style="padding: 12px; background: rgba(100, 200, 255, 0.3); border-radius: 8px; margin-bottom: 8px;">🕶️ Anonymous (current)</div>';
+        } else {
+          userList += '<div style="padding: 12px; background: rgba(255,255,255,0.1); border-radius: 8px; margin-bottom: 8px; cursor: pointer;" onclick="switchToAnonymous()">🕶️ Anonymous</div>';
+        }
+        
+        // Add saved users
+        users.forEach(user => {
+          const isCurrent = currentUser && currentUser.email === user.email;
+          const bgColor = isCurrent ? 'rgba(100, 200, 255, 0.3)' : 'rgba(255,255,255,0.1)';
+          const cursor = isCurrent ? 'default' : 'pointer';
+          const currentLabel = isCurrent ? ' (current)' : '';
+          userList += `<div style="padding: 12px; background: ${bgColor}; border-radius: 8px; margin-bottom: 8px; cursor: ${cursor};" ${!isCurrent ? `onclick="switchToUser('${user.email}')"` : ''}>
+            <div><strong>${user.name}</strong>${currentLabel}</div>
+            <div style="font-size: 12px; opacity: 0.8;">${user.email}</div>
+          </div>`;
+        });
+        
+        // Create modal
+        const modal = document.createElement('div');
+        modal.id = 'user-switcher-modal';
+        modal.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1000;';
+        modal.innerHTML = `
+          <div style="background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); padding: 30px; border-radius: 20px; max-width: 400px; width: 90%; max-height: 80vh; overflow-y: auto;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+              <h3 style="margin: 0; font-size: 20px;">Switch User</h3>
+              <button onclick="closeUserSwitcher()" style="background: rgba(255,255,255,0.2); border: none; color: white; font-size: 24px; cursor: pointer; width: 32px; height: 32px; border-radius: 50%; padding: 0;">×</button>
+            </div>
+            ${userList}
+            <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.2);">
+              <button onclick="goToUserManagement()" style="width: 100%; padding: 12px; background: rgba(255,255,255,0.1); border: 2px solid rgba(255,255,255,0.3); color: white; border-radius: 8px; cursor: pointer; font-size: 14px;">
+                ⚙️ Manage Users
+              </button>
+            </div>
+          </div>
+        `;
+        document.body.appendChild(modal);
+        
+        // Close on background click
+        modal.onclick = (e) => {
+          if (e.target === modal) {
+            closeUserSwitcher();
+          }
+        };
+      };
+      
+      window.switchToUser = function(email) {
+        setCurrentUser(email);
+        const user = getAllUsers().find(u => u.email === email);
+        if (user) {
+          user.lastLogin = new Date().toISOString();
+          saveUser(user.email, user.name);
+        }
+        location.reload();
+      };
+      
+      window.switchToAnonymous = function() {
+        localStorage.removeItem('weatherAppCurrentUser');
+        localStorage.setItem('weatherAppAnonymous', 'true');
+        location.reload();
+      };
+      
+      window.closeUserSwitcher = function() {
+        const modal = document.getElementById('user-switcher-modal');
+        if (modal) {
+          modal.remove();
+        }
+      };
+      
+      window.goToUserManagement = function() {
+        closeUserSwitcher();
+        showUserManagementModal();
+      };
+      
+      window.showUserManagementModal = function() {
+        const users = getAllUsers();
+        
+        let usersList = '';
+        users.forEach(user => {
+          usersList += `
+            <div class="user-item" style="display: flex; justify-content: space-between; align-items: center; padding: 12px; background: rgba(255,255,255,0.1); border-radius: 8px; margin-bottom: 8px;">
+              <div>
+                <div><strong>${user.name}</strong></div>
+                <div style="font-size: 12px; opacity: 0.8;">${user.email}</div>
+              </div>
+              <div style="display: flex; gap: 5px;">
+                <button onclick="editUserInModal('${user.email}')" style="padding: 6px 10px; font-size: 16px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: white; border-radius: 4px; cursor: pointer;">✏️</button>
+                <button onclick="deleteUserInModal('${user.email}')" style="padding: 6px 10px; font-size: 16px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: white; border-radius: 4px; cursor: pointer;">🗑️</button>
+              </div>
+            </div>
+          `;
+        });
+        
+        const modal = document.createElement('div');
+        modal.id = 'user-management-modal';
+        modal.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1000;';
+        modal.innerHTML = `
+          <div style="background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); padding: 30px; border-radius: 20px; max-width: 500px; width: 90%; max-height: 80vh; overflow-y: auto;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+              <h3 style="margin: 0; font-size: 20px;">Manage Users</h3>
+              <button onclick="closeUserManagement()" style="background: rgba(255,255,255,0.2); border: none; color: white; font-size: 24px; cursor: pointer; width: 32px; height: 32px; border-radius: 50%; padding: 0;">×</button>
+            </div>
+            
+            <div style="margin-bottom: 20px;">
+              <h4 style="margin-bottom: 10px; font-size: 16px;">Saved Users</h4>
+              ${users.length > 0 ? usersList : '<p style="opacity: 0.7; font-size: 14px;">No saved users yet.</p>'}
+            </div>
+            
+            <div style="border-top: 1px solid rgba(255,255,255,0.2); padding-top: 20px;">
+              <h4 style="margin-bottom: 10px; font-size: 16px;">Add New User</h4>
+              <form id="add-user-form" onsubmit="return false;">
+                <input 
+                  type="email" 
+                  id="modal-email-input" 
+                  placeholder="Email address" 
+                  required
+                  style="width: 100%; padding: 12px; font-size: 14px; border: 2px solid rgba(255,255,255,0.3); border-radius: 8px; background: rgba(255,255,255,0.1); color: white; margin-bottom: 10px;"
+                >
+                <input 
+                  type="text" 
+                  id="modal-name-input" 
+                  placeholder="Name (optional)" 
+                  style="width: 100%; padding: 12px; font-size: 14px; border: 2px solid rgba(255,255,255,0.3); border-radius: 8px; background: rgba(255,255,255,0.1); color: white; margin-bottom: 10px;"
+                >
+                <button onclick="addUserFromModal()" type="button" style="width: 100%; padding: 12px; background: rgba(100,255,150,0.3); border: 2px solid rgba(100,255,150,0.5); color: white; border-radius: 8px; cursor: pointer; font-size: 14px;">
+                  Add User
+                </button>
+              </form>
+            </div>
+          </div>
+        `;
+        document.body.appendChild(modal);
+        
+        // Close on background click
+        modal.onclick = (e) => {
+          if (e.target === modal) {
+            closeUserManagement();
+          }
+        };
+        
+        // Add placeholder styling
+        const style = document.createElement('style');
+        style.textContent = `
+          #modal-email-input::placeholder, #modal-name-input::placeholder {
+            color: rgba(255, 255, 255, 0.5);
+          }
+          #modal-email-input:focus, #modal-name-input:focus {
+            outline: none;
+            border-color: rgba(255, 255, 255, 0.6);
+            background: rgba(255, 255, 255, 0.15);
+          }
+        `;
+        document.head.appendChild(style);
+      };
+      
+      window.addUserFromModal = function() {
+        const emailInput = document.getElementById('modal-email-input');
+        const nameInput = document.getElementById('modal-name-input');
+        const email = emailInput.value.trim();
+        const name = nameInput.value.trim();
+        
+        if (email) {
+          // Just save the user - don't change current session
+          saveUser(email, name);
+          
+          // Show success message in modal instead of alert
+          const modal = document.getElementById('user-management-modal');
+          const successMsg = document.createElement('div');
+          successMsg.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; color: #1e3c72; padding: 20px 40px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); z-index: 10001; text-align: center;';
+          successMsg.innerHTML = `
+            <div style="font-size: 40px; margin-bottom: 10px;">✅</div>
+            <div style="font-size: 18px; font-weight: bold; margin-bottom: 10px;">User added successfully!</div>
+            <button onclick="this.parentElement.remove(); closeUserManagement(); showUserManagementModal();" style="margin-top: 10px; padding: 8px 20px; background: #1e3c72; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px;">Close</button>
+          `;
+          document.body.appendChild(successMsg);
+          
+          // Clear the form
+          emailInput.value = '';
+          nameInput.value = '';
+        }
+      };
+      
+      window.editUserInModal = function(email) {
+        const user = getAllUsers().find(u => u.email === email);
+        if (!user) return;
+        
+        const newName = prompt(`Edit name for ${email}:`, user.name);
+        if (newName !== null && newName.trim()) {
+          saveUser(email, newName.trim());
+          closeUserManagement();
+          showUserManagementModal();
+        }
+      };
+      
+      window.deleteUserInModal = function(email) {
+        const currentUser = getCurrentUser();
+        const isDeletingSelf = currentUser && currentUser.email === email;
+        
+        const message = isDeletingSelf 
+          ? `⚠️ Delete your own account?\n\nYou are currently logged in as ${email}.\n\nDeleting this user will log you out and return you to the login screen.\n\nAre you sure?`
+          : `Delete user ${email}?`;
+        
+        if (confirm(message)) {
+          const users = getAllUsers();
+          const filtered = users.filter(u => u.email !== email);
+          localStorage.setItem('weatherAppUsers', JSON.stringify(filtered));
+          
+          // If deleting current user, log them out
+          if (isDeletingSelf) {
+            localStorage.removeItem('weatherAppCurrentUser');
+            closeUserManagement();
+            location.reload();
+          } else {
+            closeUserManagement();
+            showUserManagementModal();
+          }
+        }
+      };
+      
+      window.closeUserManagement = function() {
+        const modal = document.getElementById('user-management-modal');
+        if (modal) {
+          modal.remove();
+        }
+      };
+      
+      // Add login functionality for anonymous users
+      // This is defined globally but will be overridden inside initWeatherApp with proper context
+      window.loginFromAnonymous = function() {
+        localStorage.removeItem('weatherAppAnonymous');
+        location.reload();
+      };
+      }
+    }
+    main();
+    </script>
+  </body>
+</html>

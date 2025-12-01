@@ -4,6 +4,7 @@
  */
 
 import { handleWeatherAPIError, withRetry } from './errorHandler.js';
+import { log } from './logger.js';
 
 // Weather data cache with timestamps
 const weatherCache = new Map(); // locationId -> { data, fetchedAt }
@@ -25,7 +26,7 @@ function getWeatherAPIKey() {
 export function getCachedWeather(locationId) {
   const cached = weatherCache.get(locationId);
   if (cached && (Date.now() - cached.fetchedAt < CACHE_DURATION)) {
-    console.log('[Weather Fetcher] Cache hit:', locationId);
+    log('[Weather Fetcher] Cache hit:', locationId);
     return cached.data;
   }
   return null;
@@ -50,21 +51,21 @@ async function fetchWeatherForLocationInternal(location) {
   const apiKey = getWeatherAPIKey();
   
   if (!apiKey) {
-    console.warn('[Weather Fetcher] No API key configured');
+    warn('[Weather Fetcher] No API key configured');
     return null;
   }
   
   const { latitude, longitude } = location.coordinates;
   const query = `${latitude},${longitude}`;
   
-  console.log('[Weather Fetcher] Fetching weather for:', location.name);
+  log('[Weather Fetcher] Fetching weather for:', location.name);
   
   const url = `https://api.weatherapi.com/v1/current.json?key=${apiKey}&q=${query}&aqi=no`;
   const response = await fetch(url);
   
   if (!response.ok) {
     const error = new Error(`API error: ${response.status} ${response.statusText}`);
-    console.error('[Weather Fetcher] API error:', response.status, response.statusText);
+    error('[Weather Fetcher] API error:', response.status, response.statusText);
     throw error;
   }
   
@@ -87,7 +88,7 @@ async function fetchWeatherForLocationInternal(location) {
     fetchedAt: Date.now()
   });
   
-  console.log('[Weather Fetcher] Weather fetched successfully:', location.name);
+  log('[Weather Fetcher] Weather fetched successfully:', location.name);
   return weatherData;
 }
 
@@ -118,7 +119,7 @@ export async function fetchWeatherForLocation(location, enableRetry = true) {
  * @returns {Promise<Map<string, Object>>} Map of locationId to weather data
  */
 export async function fetchWeatherForLocations(locations) {
-  console.log('[Weather Fetcher] Batch fetch for', locations.length, 'locations');
+  log('[Weather Fetcher] Batch fetch for', locations.length, 'locations');
   
   // Create fetch promises for all locations
   const promises = locations.map(loc => fetchWeatherForLocation(loc));
@@ -140,20 +141,20 @@ export async function fetchWeatherForLocations(locations) {
       const staleData = getStaleCache(location.id);
       
       if (staleData) {
-        console.warn('[Weather Fetcher] Using stale cache for:', location.name);
+        warn('[Weather Fetcher] Using stale cache for:', location.name);
         weatherMap.set(location.id, {
           ...staleData,
           isStale: true
         });
       } else {
-        console.error('[Weather Fetcher] No data available for:', location.name);
+        error('[Weather Fetcher] No data available for:', location.name);
         // Set null to indicate failure with no fallback
         weatherMap.set(location.id, null);
       }
     }
   });
   
-  console.log('[Weather Fetcher] Batch fetch complete:', weatherMap.size, 'results');
+  log('[Weather Fetcher] Batch fetch complete:', weatherMap.size, 'results');
   return weatherMap;
 }
 
@@ -162,7 +163,7 @@ export async function fetchWeatherForLocations(locations) {
  */
 export function clearWeatherCache() {
   weatherCache.clear();
-  console.log('[Weather Fetcher] Cache cleared');
+  log('[Weather Fetcher] Cache cleared');
 }
 
 /**

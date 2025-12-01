@@ -1,6 +1,6 @@
 # LaunchDarkly Weather App - Feature Flag Showcase
 
-A comprehensive weather application demonstrating LaunchDarkly feature flags with **14 different flags** including multi-variation flags and boolean toggles. Built entirely in JavaScript!
+A comprehensive weather application demonstrating LaunchDarkly feature flags with **14 different flags** including multi-variation flags and boolean toggles. Built with vanilla JavaScript and a modular architecture.
 
 ## 🚩 Feature Flags
 
@@ -49,25 +49,26 @@ A comprehensive weather application demonstrating LaunchDarkly feature flags wit
     - `true` - Background changes based on weather conditions
     - `false` - Static ocean blue gradient
 
-11. **`developer-mode`** - Show developer information
-    - `true` - Display "Active Feature Flags" section
-    - `false` - Hide developer tools (cleaner UI for end users)
+11. **`developer-mode`** - Show developer information and console logging
+    - `true` - Display "Active Feature Flags" section and enable verbose console logging
+    - `false` - Hide developer tools and suppress console logs (cleaner UI and console for end users)
     - **Note**: The "🐛 Record Test Error" button is always visible for observability testing
+    - **Logging**: All application console.log, console.warn, and console.error calls are hidden when this flag is false
 
 ### Multi-Variation Flags (String)
 
-11. **`wind-speed-unit`** - Wind speed measurement
+12. **`wind-speed-unit`** - Wind speed measurement
    - `mph` - Miles per hour
    - `kph` - Kilometers per hour
    - `ms` - Meters per second
    - `knots` - Nautical knots
 
-12. **`pressure-unit`** - Atmospheric pressure unit
+13. **`pressure-unit`** - Atmospheric pressure unit
    - `mb` - Millibars
    - `in` - Inches of mercury (inHg)
    - `kpa` - Kilopascals
 
-13. **`precipitation-unit`** - Precipitation measurement
+14. **`precipitation-unit`** - Precipitation measurement
    - `mm` - Millimeters
    - `in` - Inches
 
@@ -76,9 +77,11 @@ A comprehensive weather application demonstrating LaunchDarkly feature flags wit
 - **Email-based user login** - No passwords, just email for personalized feature flags
 - **LocalStorage persistence** - Returning users are automatically logged in
 - **Real-time weather data** from WeatherAPI
-- **10 feature flags** controlling different aspects of the UI
+- **14 feature flags** controlling different aspects of the UI
 - **Automatic weather refresh** at the top of every minute (synced to device time)
-- **City search** functionality
+- **City search** functionality with saved locations
+- **Modular architecture** - Clean separation of concerns with dedicated handlers
+- **Comprehensive test suite** - 20+ test files with Vitest
 - **LaunchDarkly Observability** with Web Vitals tracking
 - **Session Replay** for debugging
 - **Docker support** for containerized deployment
@@ -138,6 +141,11 @@ Create these 14 flags in your LaunchDarkly project:
 npm run dev
 ```
 
+**Run Tests:**
+```bash
+npm test
+```
+
 **Docker:**
 ```bash
 docker-compose up --build
@@ -185,20 +193,24 @@ This demonstrates how feature flags can control not just UI but also API behavio
 
 ## Docker Deployment
 
-The app includes full Docker support:
+The app includes Docker Compose support:
 
 ```bash
 # Build and run
 docker-compose up --build
 
+# Run in detached mode
+docker-compose up -d
+
 # Stop
 docker-compose down
 
 # View logs
-docker logs launchdarkly-hello-js
+docker-compose logs -f
 ```
 
-Container name: `launchdarkly-hello-js`
+Image name: `launchdarkly-demo-weatherapp-js`
+Container name: `launchdarkly-demo-weatherapp-js`
 Port: `5173`
 
 ## Technology Stack
@@ -209,6 +221,9 @@ Port: `5173`
 - **web-vitals** (v4.2.4)
 - **WeatherAPI** - Weather data provider
 - **Vite** (v5.0.0)
+- **Vitest** (v4.0.13) - Testing framework
+- **jsdom** (v27.2.0) - DOM testing environment
+- **fast-check** (v4.3.0) - Property-based testing
 - **Docker** - Containerization
 
 ## Observability Features
@@ -229,23 +244,59 @@ Observability is **built into LaunchDarkly** and uses highlight.io as the backen
 3. **Enable observability** for your project
 4. **The SDK will automatically connect** - no additional configuration needed!
 
-**Current Status**: If you see "record not found" errors in the console, it means observability hasn't been enabled in your LaunchDarkly account yet. The app will still work fine - these errors are just the SDK trying to connect to an observability backend that hasn't been set up.
-
 **Note**: You don't need to sign up for highlight.io separately. LaunchDarkly manages the observability backend for you once you enable it in your account settings.
+
+## Testing
+
+The app includes a comprehensive test suite with 20+ test files covering:
+
+- **Bootstrap & initialization** - SDK setup and flag evaluation
+- **Authentication flows** - Login, logout, user management
+- **Location management** - Save, edit, delete locations
+- **Weather data fetching** - API integration and error handling
+- **UI rendering** - Card rendering and state management
+- **Accessibility** - ARIA labels and keyboard navigation
+- **Error handling** - Graceful degradation and error recovery
+- **Integration flows** - End-to-end user scenarios
+
+Run tests with:
+```bash
+npm test              # Run all tests once
+npm run test:watch    # Run tests in watch mode
+```
 
 ## Project Structure
 
 ```
 .
-├── index.html              # Main app with LaunchDarkly integration
-├── index.css               # Responsive styling
-├── package.json            # Dependencies
-├── Dockerfile              # Docker image definition
-├── docker-compose.yml      # Docker Compose configuration
-├── .dockerignore          # Docker ignore rules
-├── .env                    # Your credentials (not in git)
-├── .env.example            # Template
-└── README.md               # This file
+├── index.html                          # Main HTML entry point
+├── index.css                           # Responsive styling
+├── src/                                # Source modules
+│   ├── bootstrap.js                    # App initialization & SDK setup
+│   ├── weatherDataFetcher.js           # Weather API integration
+│   ├── locationCardRenderer.js         # Weather card rendering
+│   ├── locationStorage.js              # Location persistence
+│   ├── viewStateManager.js             # UI state management
+│   ├── addLocationHandler.js           # Add location functionality
+│   ├── editLocationHandler.js          # Edit location functionality
+│   ├── deleteLocationHandler.js        # Delete location functionality
+│   ├── authLocationIntegration.js      # Auth & location integration
+│   └── errorHandler.js                 # Error handling utilities
+├── test/                               # Comprehensive test suite
+│   ├── setup.js                        # Test configuration
+│   ├── bootstrap.test.js               # Bootstrap tests
+│   ├── auth-integration.test.js        # Authentication tests
+│   ├── location-storage.test.js        # Storage tests
+│   ├── weather-data-fetcher.test.js    # API tests
+│   ├── error-handling.test.js          # Error handling tests
+│   ├── accessibility.test.js           # A11y tests
+│   └── ... (20+ test files)
+├── vitest.config.js                    # Test configuration
+├── package.json                        # Dependencies & scripts
+├── Dockerfile                          # Docker image definition
+├── docker-compose.yml                  # Docker Compose configuration
+├── .env                                # Your credentials (not in git)
+└── .env.example                        # Environment template
 ```
 
 ## Troubleshooting

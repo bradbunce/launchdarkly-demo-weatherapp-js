@@ -3,6 +3,8 @@
  * Handles error display, loading states, success messages, and retry functionality
  */
 
+import { log, error as logError } from './logger.js';
+
 /**
  * Display a toast notification to the user
  * @param {string} message - Message to display
@@ -29,7 +31,7 @@ export function showToast(message, type = 'info', duration = 3000) {
   
   container.appendChild(toast);
   
-  console.log(`[User Feedback] Toast displayed: ${type} - ${message}`);
+  log(`[User Feedback] Toast displayed: ${type} - ${message}`);
   
   // Auto-remove after duration
   if (duration > 0) {
@@ -71,7 +73,7 @@ export function showLoading(container, message = 'Loading...') {
   
   container.appendChild(loading);
   
-  console.log(`[User Feedback] Loading indicator shown: ${message}`);
+  log(`[User Feedback] Loading indicator shown: ${message}`);
   
   return loading;
 }
@@ -83,7 +85,7 @@ export function showLoading(container, message = 'Loading...') {
 export function hideLoading(loadingElement) {
   if (loadingElement && loadingElement.parentNode) {
     loadingElement.parentNode.removeChild(loadingElement);
-    console.log('[User Feedback] Loading indicator hidden');
+    log('[User Feedback] Loading indicator hidden');
   }
 }
 
@@ -117,7 +119,7 @@ export function showStalenessIndicator(element, lastUpdated) {
   
   element.appendChild(indicator);
   
-  console.log(`[User Feedback] Staleness indicator shown for: ${lastUpdated}`);
+  log(`[User Feedback] Staleness indicator shown for: ${lastUpdated}`);
   
   return indicator;
 }
@@ -172,7 +174,7 @@ export function showError(container, message, onRetry = null) {
     retryButton.textContent = 'Retry';
     retryButton.setAttribute('aria-label', 'Retry loading weather data');
     retryButton.addEventListener('click', () => {
-      console.log('[User Feedback] Retry button clicked');
+      log('[User Feedback] Retry button clicked');
       onRetry();
     });
     error.appendChild(retryButton);
@@ -180,7 +182,7 @@ export function showError(container, message, onRetry = null) {
   
   container.appendChild(error);
   
-  console.log(`[User Feedback] Error displayed: ${message}`);
+  log(`[User Feedback] Error displayed: ${message}`);
   
   return error;
 }
@@ -192,7 +194,7 @@ export function showError(container, message, onRetry = null) {
  */
 export function handleStorageQuotaError(error) {
   const message = 'Storage limit reached. Some locations may not be saved.';
-  console.error('[Location Storage] Quota exceeded:', error);
+  error('[Location Storage] Quota exceeded:', error);
   showToast(message, 'warning', 5000);
   return message;
 }
@@ -205,7 +207,7 @@ export function handleStorageQuotaError(error) {
  */
 export function handleWeatherAPIError(error, locationName = 'this location') {
   const message = `Unable to load weather data for ${locationName}. Using cached data if available.`;
-  console.error('[Weather API] Fetch failed:', error);
+  logError('[Weather API] Fetch failed:', error);
   showToast(message, 'error', 4000);
   return message;
 }
@@ -232,7 +234,7 @@ export function showLocationSuccess(operation, locationName) {
   }
   
   showToast(message, 'success', 3000);
-  console.log(`[User Feedback] Success: ${operation} - ${locationName}`);
+  log(`[User Feedback] Success: ${operation} - ${locationName}`);
 }
 
 /**
@@ -242,7 +244,7 @@ export function showLocationSuccess(operation, locationName) {
  */
 export function showLocationError(operation, errorMessage) {
   showToast(errorMessage, 'error', 4000);
-  console.error(`[User Feedback] Error: ${operation} - ${errorMessage}`);
+  error(`[User Feedback] Error: ${operation} - ${errorMessage}`);
 }
 
 /**
@@ -258,20 +260,20 @@ export function withRetry(fn, maxRetries = 3, delay = 1000) {
     
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        console.log(`[Retry] Attempt ${attempt + 1}/${maxRetries + 1}`);
+        log(`[Retry] Attempt ${attempt + 1}/${maxRetries + 1}`);
         return await fn(...args);
       } catch (error) {
         lastError = error;
-        console.warn(`[Retry] Attempt ${attempt + 1} failed:`, error.message);
+        warn(`[Retry] Attempt ${attempt + 1} failed:`, error.message);
         
         if (attempt < maxRetries) {
-          console.log(`[Retry] Waiting ${delay}ms before retry...`);
+          log(`[Retry] Waiting ${delay}ms before retry...`);
           await new Promise(resolve => setTimeout(resolve, delay));
         }
       }
     }
     
-    console.error('[Retry] All attempts failed:', lastError);
+    error('[Retry] All attempts failed:', lastError);
     throw lastError;
   };
 }

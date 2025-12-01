@@ -6,6 +6,7 @@
 import { deleteLocation, getLocations } from './locationStorage.js';
 import { determineView } from './viewStateManager.js';
 import { showLocationSuccess, showLocationError } from './errorHandler.js';
+import { log, error } from './logger.js';
 
 /**
  * Show delete confirmation dialog
@@ -20,7 +21,7 @@ export function showDeleteConfirmation(userEmail, locationId, onConfirm, onCance
   const location = locations.find(loc => loc.id === locationId);
   
   if (!location) {
-    console.error('[Delete Location] Location not found:', locationId);
+    error('[Delete Location] Location not found:', locationId);
     return;
   }
   
@@ -91,7 +92,7 @@ export function showDeleteConfirmation(userEmail, locationId, onConfirm, onCance
   // Trap focus within dialog
   trapFocus(dialog);
   
-  console.log('[Delete Location] Confirmation dialog shown for:', location.name);
+  log('[Delete Location] Confirmation dialog shown for:', location.name);
   
   /**
    * Remove dialog from DOM
@@ -160,7 +161,7 @@ export function handleDeleteLocation(userEmail, locationId, onSuccess, onError) 
       const result = deleteLocation(userEmail, locationId);
       
       if (result.success) {
-        console.log('[Delete Location] Location deleted successfully');
+        log('[Delete Location] Location deleted successfully');
         showLocationSuccess('delete', locationName);
         
         // Check if we need to transition views
@@ -172,7 +173,7 @@ export function handleDeleteLocation(userEmail, locationId, onSuccess, onError) 
         
         // If we deleted the last location (or down to 1), transition to detail view
         if (newView === 'detail' && remainingLocations.length === 0) {
-          console.log('[Delete Location] Last location deleted, transitioning to detail view');
+          log('[Delete Location] Last location deleted, transitioning to detail view');
         }
         
         // Call success callback
@@ -180,7 +181,7 @@ export function handleDeleteLocation(userEmail, locationId, onSuccess, onError) 
           onSuccess();
         }
       } else {
-        console.error('[Delete Location] Delete failed:', result.error);
+        error('[Delete Location] Delete failed:', result.error);
         
         // Show error message
         showLocationError('delete', result.error || 'Failed to delete location');
@@ -194,7 +195,7 @@ export function handleDeleteLocation(userEmail, locationId, onSuccess, onError) 
     },
     () => {
       // User cancelled deletion
-      console.log('[Delete Location] Deletion cancelled by user');
+      log('[Delete Location] Deletion cancelled by user');
     }
   );
 }

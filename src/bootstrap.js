@@ -3,6 +3,8 @@
  * Handles the initialization sequence with anonymous context
  */
 
+import { log, warn, error } from './logger.js';
+
 // Geolocation cache
 let cachedLocation = null;
 let cacheTimestamp = null;
@@ -16,7 +18,7 @@ export async function getUserLocation() {
   // Check cache first
   const now = Date.now();
   if (cachedLocation && cacheTimestamp && (now - cacheTimestamp < CACHE_DURATION)) {
-    console.log('[Geolocation] Using cached location:', cachedLocation);
+    log('[Geolocation] Using cached location:', cachedLocation);
     return cachedLocation;
   }
 
@@ -34,17 +36,17 @@ export async function getUserLocation() {
           cachedLocation = location;
           cacheTimestamp = Date.now();
           
-          console.log('[Geolocation] Location obtained:', location);
+          log('[Geolocation] Location obtained:', location);
           resolve(location);
         },
         (error) => {
-          console.warn('[Geolocation] Error:', error.message);
+          warn('[Geolocation] Error:', error.message);
           resolve(null);
         },
         { timeout: 5000 } // 5s timeout
       );
     } else {
-      console.warn('[Geolocation] Not supported');
+      warn('[Geolocation] Not supported');
       resolve(null);
     }
   });
@@ -99,22 +101,22 @@ export async function bootstrap(initializeSDK) {
   try {
     location = await getUserLocation();
   } catch (error) {
-    console.error('[Bootstrap] Geolocation error:', error.message);
+    error('[Bootstrap] Geolocation error:', error.message);
     // Continue without location
   }
   
   // Step 2: Create anonymous context with location
   const anonymousContext = createAnonymousContext(location);
   
-  console.log('[LD Context] Bootstrap: Created anonymous context:', anonymousContext);
+  log('[LD Context] Bootstrap: Created anonymous context:', anonymousContext);
   
   // Step 3: Initialize SDK with anonymous context
   // Note: localStorage should NOT be read before this point
   try {
     client = await initializeSDK(anonymousContext);
   } catch (error) {
-    console.error('[Bootstrap] SDK initialization failed:', error.message);
-    console.error('[Bootstrap] Using defaults and allowing user login');
+    error('[Bootstrap] SDK initialization failed:', error.message);
+    error('[Bootstrap] Using defaults and allowing user login');
     // Re-throw to let caller handle SDK failure
     throw error;
   }

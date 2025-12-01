@@ -4,6 +4,7 @@
  */
 
 import { handleStorageQuotaError } from './errorHandler.js';
+import { log, warn, error } from './logger.js';
 
 // In-memory fallback storage when localStorage is unavailable
 const inMemoryStorage = new Map();
@@ -30,7 +31,7 @@ function saveToStorage(key, value) {
     if (error.name === 'QuotaExceededError' || error.code === 22) {
       handleStorageQuotaError(error);
     } else {
-      console.warn('[Location Storage] localStorage unavailable, using memory:', error);
+      warn('[Location Storage] localStorage unavailable, using memory:', error);
     }
     inMemoryStorage.set(key, value);
   }
@@ -46,7 +47,7 @@ function getFromStorage(key) {
     const item = localStorage.getItem(key);
     return item ? JSON.parse(item) : null;
   } catch (error) {
-    console.warn('[Location Storage] localStorage unavailable, using memory:', error);
+    warn('[Location Storage] localStorage unavailable, using memory:', error);
     return inMemoryStorage.get(key) || null;
   }
 }
@@ -137,20 +138,20 @@ export function getLocations(userEmail) {
  * @returns {{success: boolean, error?: string, location?: Object}}
  */
 export function saveLocation(userEmail, location) {
-  console.log('[Location Manager] Saving location:', { userEmail, location });
+  log('[Location Manager] Saving location:', { userEmail, location });
   
   // Validate location data
   const validation = validateLocation(location);
   if (!validation.valid) {
     const error = `Invalid location data: ${validation.errors.join(', ')}`;
-    console.error('[Location Manager] Validation failed:', error);
+    error('[Location Manager] Validation failed:', error);
     return { success: false, error };
   }
   
   // Check for duplicates
   if (locationExists(userEmail, location.name)) {
     const error = 'This location is already in your favorites';
-    console.warn('[Location Manager] Duplicate location:', location.name);
+    warn('[Location Manager] Duplicate location:', location.name);
     return { success: false, error };
   }
   
@@ -182,10 +183,10 @@ export function saveLocation(userEmail, location) {
   
   try {
     saveToStorage(key, data);
-    console.log('[Location Manager] Location saved successfully:', newLocation);
+    log('[Location Manager] Location saved successfully:', newLocation);
     return { success: true, location: newLocation };
   } catch (error) {
-    console.error('[Location Manager] Save failed:', error);
+    error('[Location Manager] Save failed:', error);
     return { success: false, error: error.message };
   }
 }
@@ -203,7 +204,7 @@ export function updateLocation(userEmail, locationId, updates) {
   
   if (index === -1) {
     const error = 'Location not found';
-    console.error('[Location Manager] Update failed:', error);
+    error('[Location Manager] Update failed:', error);
     return { success: false, error };
   }
   
@@ -223,7 +224,7 @@ export function updateLocation(userEmail, locationId, updates) {
   const validation = validateLocation(updatedLocation);
   if (!validation.valid) {
     const error = `Invalid location data: ${validation.errors.join(', ')}`;
-    console.error('[Location Manager] Validation failed:', error);
+    error('[Location Manager] Validation failed:', error);
     return { success: false, error };
   }
   
@@ -235,11 +236,11 @@ export function updateLocation(userEmail, locationId, updates) {
   
   if (duplicate) {
     const error = 'A location with this name already exists';
-    console.warn('[Location Manager] Duplicate name:', updatedLocation.name);
+    warn('[Location Manager] Duplicate name:', updatedLocation.name);
     return { success: false, error };
   }
   
-  console.log('[Location Manager] Updating location:', { 
+  log('[Location Manager] Updating location:', { 
     userEmail, 
     oldLocation, 
     newLocation: updatedLocation 
@@ -257,10 +258,10 @@ export function updateLocation(userEmail, locationId, updates) {
   
   try {
     saveToStorage(key, data);
-    console.log('[Location Manager] Location updated successfully');
+    log('[Location Manager] Location updated successfully');
     return { success: true, location: updatedLocation };
   } catch (error) {
-    console.error('[Location Manager] Update failed:', error);
+    error('[Location Manager] Update failed:', error);
     return { success: false, error: error.message };
   }
 }
@@ -277,12 +278,12 @@ export function deleteLocation(userEmail, locationId) {
   
   if (index === -1) {
     const error = 'Location not found';
-    console.error('[Location Manager] Delete failed:', error);
+    error('[Location Manager] Delete failed:', error);
     return { success: false, error };
   }
   
   const deletedLocation = locations[index];
-  console.log('[Location Manager] Deleting location:', { userEmail, locationId, location: deletedLocation });
+  log('[Location Manager] Deleting location:', { userEmail, locationId, location: deletedLocation });
   
   // Remove from array
   locations.splice(index, 1);
@@ -296,10 +297,10 @@ export function deleteLocation(userEmail, locationId) {
   
   try {
     saveToStorage(key, data);
-    console.log('[Location Manager] Location deleted successfully');
+    log('[Location Manager] Location deleted successfully');
     return { success: true };
   } catch (error) {
-    console.error('[Location Manager] Delete failed:', error);
+    error('[Location Manager] Delete failed:', error);
     return { success: false, error: error.message };
   }
 }
@@ -311,7 +312,7 @@ export function deleteLocation(userEmail, locationId) {
  */
 export function loadLocations(userEmail) {
   const locations = getLocations(userEmail);
-  console.log('[Location Manager] Loaded locations:', { 
+  log('[Location Manager] Loaded locations:', { 
     userEmail, 
     count: locations.length, 
     locations 

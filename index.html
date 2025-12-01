@@ -17,6 +17,7 @@
     import SessionReplay from '@launchdarkly/session-replay';
     import { onCLS, onFID, onLCP, onFCP, onTTFB, onINP } from 'web-vitals';
     import { attachSaveLocationButton } from './src/addLocationHandler.js';
+    import { log, warn, error, initLogger } from './src/logger.js';
 
     function main()
     {
@@ -223,10 +224,10 @@
             latitude: location.latitude,
             longitude: location.longitude
           };
-          console.log('[LD Context] Location added to anonymous context:', anonContext.location);
+          log('[LD Context] Location added to anonymous context:', anonContext.location);
         }
         
-        console.log('[LD Context] Initializing SDK with anonymous context:', anonContext);
+        log('[LD Context] Initializing SDK with anonymous context:', anonContext);
         
         // Initialize SDK with observability plugins
         // The Observe plugin will automatically use your LaunchDarkly organization ID
@@ -251,10 +252,11 @@
         
         checkClient.on('ready', () => {
           // SDK is ready - evaluate flag and wait for user to click
-          console.log('[LD Context] SDK ready, evaluating enable-user-login flag');
+          initLogger(checkClient); // Initialize logger with LD client
+          log('[LD Context] SDK ready, evaluating enable-user-login flag');
           isReady = true;
           currentLoginEnabled = checkClient.variation(FLAGS.enableUserLogin, true);
-          console.log('[Flag Evaluation]', FLAGS.enableUserLogin, '=', currentLoginEnabled);
+          log('[Flag Evaluation]', FLAGS.enableUserLogin, '=', currentLoginEnabled);
           
           // Enable the enter button now that we're ready
           const enterBtn = document.getElementById('enter-app-btn');
@@ -281,13 +283,13 @@
         
         // Listen for flag changes while on splash screen
         checkClient.on('change', () => {
-          console.log('[Flag Evaluation] enable-user-login flag changed');
+          log('[Flag Evaluation] enable-user-login flag changed');
           currentLoginEnabled = checkClient.variation(FLAGS.enableUserLogin, true);
         });
         
         checkClient.on('failed', () => {
           // If SDK fails, still allow user to enter with defaults
-          console.error('[LD Context] SDK initialization failed, using defaults');
+          error('[LD Context] SDK initialization failed, using defaults');
           const enterBtn = document.getElementById('enter-app-btn');
           if (enterBtn) {
             enterBtn.disabled = false;
@@ -309,7 +311,7 @@
             showLoginScreen(true, client, anonCtx, observePlugin);
           } else {
             // Login disabled - continue as anonymous with existing client
-            console.log('[LD Context] Login disabled, proceeding with anonymous context');
+            log('[LD Context] Login disabled, proceeding with anonymous context');
             context = anonCtx;
             initWeatherApp(client, context, observePlugin, true);
           }
@@ -348,7 +350,7 @@
             // Already have anonymous client, just continue to app
             if (ldClient) {
               const contextToUse = anonContext || { kind: 'user', anonymous: true };
-              console.log('[LD Context] Login disabled, continuing as anonymous:', contextToUse);
+              log('[LD Context] Login disabled, continuing as anonymous:', contextToUse);
               continueWithClient(ldClient, contextToUse, observePlugin);
             }
           };
@@ -451,13 +453,13 @@
         
         // Global functions for user management
         window.loginAsUser = async function(email) {
-          console.log('[User Selection] User selected:', email);
+          log('[User Selection] User selected:', email);
           setCurrentUser(email);
           const user = getAllUsers().find(u => u.email === email);
           if (user) {
             user.lastLogin = new Date().toISOString();
             saveUser(user.email, user.name);
-            console.log('[User Selection] Updated lastLogin timestamp for:', email);
+            log('[User Selection] Updated lastLogin timestamp for:', email);
             
             // Identify the user with the existing LD client
             if (ldClient) {
@@ -470,11 +472,11 @@
               // Preserve geolocation from anonymous context
               if (anonContext && anonContext.location) {
                 newContext.location = anonContext.location;
-                console.log('[User Selection] Preserved geolocation in user context');
+                log('[User Selection] Preserved geolocation in user context');
               }
-              console.log('[LD Context] Identifying user:', newContext);
+              log('[LD Context] Identifying user:', newContext);
               await ldClient.identify(newContext);
-              console.log('[LD Context] User identified successfully');
+              log('[LD Context] User identified successfully');
               continueWithClient(ldClient, newContext, observePlugin);
             } else {
               location.reload();
@@ -546,7 +548,7 @@
             if (editingEmail) {
               // Update existing user profile
               saveUser(email, name);
-              console.log('[User Creation] Updated user profile:', email);
+              log('[User Creation] Updated user profile:', email);
               
               // Refresh the login screen to show the updated user
               showLoginScreen(true, ldClient, anonContext, observePlugin);
@@ -558,7 +560,7 @@
               const users = getAllUsers();
               const savedProfile = users.find(u => u.email === email);
               
-              console.log('[User Creation] New user created:', {
+              log('[User Creation] New user created:', {
                 email: savedProfile.email,
                 name: savedProfile.name,
                 derivedName: !name // Log if name was derived
@@ -576,12 +578,12 @@
                 // Preserve geolocation from anonymous context
                 if (anonContext && anonContext.location) {
                   newContext.location = anonContext.location;
-                  console.log('[User Creation] Preserved geolocation in new user context');
+                  log('[User Creation] Preserved geolocation in new user context');
                 }
                 
-                console.log('[LD Context] Identifying new user:', newContext);
+                log('[LD Context] Identifying new user:', newContext);
                 await ldClient.identify(newContext);
-                console.log('[LD Context] New user identified successfully');
+                log('[LD Context] New user identified successfully');
                 
                 // Set as current user and proceed to weather app
                 setCurrentUser(savedProfile.email);
@@ -600,7 +602,7 @@
           // Already have anonymous client running, just continue to app
           if (ldClient) {
             const contextToUse = anonContext || ldClient.getContext();
-            console.log('[LD Context] Continuing as anonymous:', contextToUse);
+            log('[LD Context] Continuing as anonymous:', contextToUse);
             continueWithClient(ldClient, contextToUse, observePlugin);
           } else {
             // Fallback if no client (shouldn't happen)
@@ -608,7 +610,7 @@
               kind: 'user',
               anonymous: true
             };
-            console.log('[LD Context] Fallback: initializing with anonymous context:', fallbackContext);
+            log('[LD Context] Fallback: initializing with anonymous context:', fallbackContext);
             context = fallbackContext;
             initializeApp(context);
           }
@@ -622,7 +624,7 @@
         if (ldClient) {
           const flagChangeHandler = () => {
             const newLoginEnabled = ldClient.variation('enable-user-login', true);
-            console.log('[Flag Evaluation] enable-user-login flag changed on login screen:', newLoginEnabled);
+            log('[Flag Evaluation] enable-user-login flag changed on login screen:', newLoginEnabled);
             
             // Re-render the login screen with the new flag value
             // Remove the old listener before re-rendering to avoid duplicates
@@ -646,14 +648,14 @@
               latitude: location.latitude,
               longitude: location.longitude
             };
-            console.log('[LD Context] User location added to context:', newContext.location);
+            log('[LD Context] User location added to context:', newContext.location);
           }
         }
         
         // Store the context globally
         context = newContext;
         
-        console.log('[LD Context] Continuing with client, context:', context);
+        log('[LD Context] Continuing with client, context:', context);
         
         // The client is already ready, start the app immediately
         initWeatherApp(ldClient, context, observePlugin, true); // Pass true to indicate client is already ready
@@ -670,17 +672,17 @@
                   longitude: position.coords.longitude,
                   accuracy: position.coords.accuracy
                 };
-                console.log('[Geolocation] Location obtained:', location);
+                log('[Geolocation] Location obtained:', location);
                 resolve(location);
               },
               (error) => {
-                console.warn('[Geolocation] Error:', error.message);
+                warn('[Geolocation] Error:', error.message);
                 resolve(null);
               },
               { timeout: 5000, maximumAge: 300000 } // 5s timeout, cache for 5 min
             );
           } else {
-            console.warn('[Geolocation] Not supported');
+            warn('[Geolocation] Not supported');
             resolve(null);
           }
         });
@@ -697,11 +699,11 @@
               latitude: location.latitude,
               longitude: location.longitude
             };
-            console.log('[LD Context] User location added to context:', newContext.location);
+            log('[LD Context] User location added to context:', newContext.location);
           }
         }
         context = newContext;
-        console.log('[LD Context] Initializing SDK with context:', context);
+        log('[LD Context] Initializing SDK with context:', context);
 
         // Initialize SDK with observability plugins
         // The Observe plugin will automatically use your LaunchDarkly organization ID
@@ -722,41 +724,80 @@
         });
 
         ldclient.on('initialized', () => {
-          console.log('SDK initialized');
+          log('SDK initialized');
           // Keep showing "Loading..." - no need to update UI here
         });
         ldclient.on('failed', () => {
-          console.error('SDK failed to initialize');
+          error('SDK failed to initialize');
           appContent.innerHTML = '<p class="loading">Failed to initialize</p>';
         });
         
         // Use waitUntilReady to ensure we catch the ready state
         ldclient.waitUntilReady().then(() => {
-          console.log('SDK ready, starting weather app');
+          log('SDK ready, starting weather app');
           initWeatherApp(ldclient, context);
         }).catch((error) => {
-          console.error('SDK failed to become ready:', error);
+          error('SDK failed to become ready:', error);
           appContent.innerHTML = '<p class="loading">SDK failed to become ready</p>';
         });
       }
       
       function initWeatherApp(ldclient, context, observePlugin, isReady = false) {
-        console.log('initWeatherApp called with context:', context, 'isReady:', isReady);
-        console.log('Client waitUntilReady state:', ldclient.waitUntilReady);
+        log('initWeatherApp called with context:', context, 'isReady:', isReady);
+        log('Client waitUntilReady state:', ldclient.waitUntilReady);
         
         // Weather API configuration
         const weatherApiKey = import.meta.env.VITE_WEATHER_API_KEY || '';
         let weatherData = null;
+        
+        // Flag state - evaluate once and update via listeners
+        const flagState = {
+          temperatureScale: ldclient.variation(FLAGS.temperatureScale, false),
+          windSpeedUnit: ldclient.variation(FLAGS.windSpeedUnit, 'mph'),
+          pressureUnit: ldclient.variation(FLAGS.pressureUnit, 'mb'),
+          precipitationUnit: ldclient.variation(FLAGS.precipitationUnit, 'mm'),
+          showAirQuality: ldclient.variation(FLAGS.showAirQuality, false),
+          showAstronomy: ldclient.variation(FLAGS.showAstronomy, false),
+          showForecast: ldclient.variation(FLAGS.showForecast, false),
+          showHourlyForecast: ldclient.variation(FLAGS.showHourlyForecast, false),
+          showAlerts: ldclient.variation(FLAGS.showAlerts, false),
+          dynamicTheme: ldclient.variation(FLAGS.dynamicTheme, false),
+          developerMode: ldclient.variation(FLAGS.developerMode, false),
+          enableUserLogin: ldclient.variation(FLAGS.enableUserLogin, true),
+          saveLocations: ldclient.variation(FLAGS.saveLocations, false),
+          rememberLocation: ldclient.variation(FLAGS.rememberLocation, false)
+        };
+        
+        // Listen for flag changes and update state + re-render
+        ldclient.on('change', (changes) => {
+          let needsRerender = false;
+          
+          Object.keys(changes).forEach(flagKey => {
+            const flagName = Object.keys(FLAGS).find(key => FLAGS[key] === flagKey);
+            if (flagName) {
+              const stateKey = flagName.charAt(0).toLowerCase() + flagName.slice(1);
+              if (flagState.hasOwnProperty(stateKey)) {
+                flagState[stateKey] = changes[flagKey].current;
+                needsRerender = true;
+                log('[Flag Change]', flagKey, ':', changes[flagKey].previous, '->', changes[flagKey].current);
+              }
+            }
+          });
+          
+          if (needsRerender) {
+            render();
+          }
+        });
 
       // Fetch comprehensive weather data from WeatherAPI
       async function fetchWeather(city = 'San Francisco') {
-        const showAirQuality = ldclient.variation(FLAGS.showAirQuality, false);
-        const showAstronomy = ldclient.variation(FLAGS.showAstronomy, false);
-        const showForecast = ldclient.variation(FLAGS.showForecast, false);
-        const showAlerts = ldclient.variation(FLAGS.showAlerts, false);
+        const showAirQuality = flagState.showAirQuality;
+        const showAstronomy = flagState.showAstronomy;
+        const showForecast = flagState.showForecast;
+        const showAlerts = flagState.showAlerts;
         
         if (!weatherApiKey) {
-          console.warn('Weather API key not configured, using mock data');
+          warn('Weather API key not configured, using mock data');
           return getMockWeatherData();
         }
 
@@ -771,7 +812,7 @@
             apiUrl = `https://api.weatherapi.com/v1/current.json?key=${weatherApiKey}&q=${city}&aqi=${showAirQuality ? 'yes' : 'no'}`;
           }
           
-          console.log('[WeatherAPI] Fetching weather data for:', city);
+          log('[WeatherAPI] Fetching weather data for:', city);
           const response = await fetch(apiUrl);
           
           if (!response.ok) {
@@ -779,26 +820,26 @@
           }
 
           const data = await response.json();
-          console.log('[WeatherAPI Response] Complete response body:', data);
+          log('[WeatherAPI Response] Complete response body:', data);
           
           // Fetch astronomy data separately if needed
           let astronomyData = null;
           if (showAstronomy) {
             try {
-              console.log('[WeatherAPI] Fetching astronomy data for:', city);
+              log('[WeatherAPI] Fetching astronomy data for:', city);
               const astroResponse = await fetch(`https://api.weatherapi.com/v1/astronomy.json?key=${weatherApiKey}&q=${city}&dt=${data.location.localtime.split(' ')[0]}`);
               if (astroResponse.ok) {
                 astronomyData = await astroResponse.json();
-                console.log('[WeatherAPI Response] Astronomy data:', astronomyData);
+                log('[WeatherAPI Response] Astronomy data:', astronomyData);
               }
             } catch (e) {
-              console.warn('[WeatherAPI] Failed to fetch astronomy data:', e);
+              warn('[WeatherAPI] Failed to fetch astronomy data:', e);
             }
           }
           
           return parseWeatherData(data, astronomyData);
         } catch (error) {
-          console.error('Failed to fetch weather:', error);
+          error('Failed to fetch weather:', error);
           observePlugin.observe?.recordError(
             error,
             'Failed to fetch weather data from WeatherAPI',
@@ -922,24 +963,24 @@
       async function render() {
         // Get initial city based on user type and flags
         if (!weatherData) {
-          console.log('[Weather] Determining initial location...');
+          log('[Weather] Determining initial location...');
           let initialCity = 'San Francisco';
           let useGeolocation = false;
           
           if (context.anonymous) {
             // Anonymous: always use current geolocation
-            console.log('[Weather] Anonymous user - using geolocation');
+            log('[Weather] Anonymous user - using geolocation');
             useGeolocation = true;
           } else if (context.email) {
             // Logged-in: check if they have a default location set
             const defaultLoc = getDefaultLocation(context.email);
             if (defaultLoc) {
               // Has default location - use it
-              console.log('[Weather] Using saved default location:', defaultLoc);
+              log('[Weather] Using saved default location:', defaultLoc);
               initialCity = defaultLoc;
             } else {
               // No default location - use current geolocation
-              console.log('[Weather] No default location - using geolocation');
+              log('[Weather] No default location - using geolocation');
               useGeolocation = true;
             }
           }
@@ -948,40 +989,40 @@
             try {
               // Use coordinates directly with WeatherAPI
               const coords = `${context.location.latitude},${context.location.longitude}`;
-              console.log('[Weather] Fetching weather by coordinates:', coords);
+              log('[Weather] Fetching weather by coordinates:', coords);
               currentWeatherQuery = coords; // Store for refreshes
               weatherData = await fetchWeather(coords);
-              console.log('[Weather] Weather data loaded successfully');
+              log('[Weather] Weather data loaded successfully');
               // Don't return - continue to render the UI
             } catch (error) {
-              console.warn('[Weather] Failed to fetch weather by coordinates, using default:', error);
+              warn('[Weather] Failed to fetch weather by coordinates, using default:', error);
               // Fall through to fetch by city name
-              console.log('[Weather] Fetching weather for city:', initialCity);
+              log('[Weather] Fetching weather for city:', initialCity);
               currentWeatherQuery = initialCity; // Store for refreshes
               weatherData = await fetchWeather(initialCity);
-              console.log('[Weather] Weather data loaded successfully');
+              log('[Weather] Weather data loaded successfully');
             }
           } else if (!useGeolocation) {
             // Not using geolocation, fetch by city name
-            console.log('[Weather] Fetching weather for city:', initialCity);
+            log('[Weather] Fetching weather for city:', initialCity);
             currentWeatherQuery = initialCity; // Store for refreshes
             weatherData = await fetchWeather(initialCity);
-            console.log('[Weather] Weather data loaded successfully');
+            log('[Weather] Weather data loaded successfully');
           }
         }
 
-        // Get all flag values
-        const useFahrenheit = ldclient.variation(FLAGS.temperatureScale, false);
-        const windUnit = ldclient.variation(FLAGS.windSpeedUnit, 'mph');
-        const pressureUnit = ldclient.variation(FLAGS.pressureUnit, 'mb');
-        const precipUnit = ldclient.variation(FLAGS.precipitationUnit, 'mm');
-        const showAirQuality = ldclient.variation(FLAGS.showAirQuality, false);
-        const showAstronomy = ldclient.variation(FLAGS.showAstronomy, false);
-        const showForecast = ldclient.variation(FLAGS.showForecast, false);
-        const showHourly = ldclient.variation(FLAGS.showHourlyForecast, false);
-        const showAlerts = ldclient.variation(FLAGS.showAlerts, false);
-        const useDynamicTheme = ldclient.variation(FLAGS.dynamicTheme, false);
-        const developerMode = ldclient.variation(FLAGS.developerMode, false);
+        // Get all flag values from state (no re-evaluation)
+        const useFahrenheit = flagState.temperatureScale;
+        const windUnit = flagState.windSpeedUnit;
+        const pressureUnit = flagState.pressureUnit;
+        const precipUnit = flagState.precipitationUnit;
+        const showAirQuality = flagState.showAirQuality;
+        const showAstronomy = flagState.showAstronomy;
+        const showForecast = flagState.showForecast;
+        const showHourly = flagState.showHourlyForecast;
+        const showAlerts = flagState.showAlerts;
+        const useDynamicTheme = flagState.dynamicTheme;
+        const developerMode = flagState.developerMode;
         
         // Apply theme
         applyWeatherTheme(weatherData.condition, useDynamicTheme);
@@ -1016,7 +1057,7 @@
         
         // Build HTML
         const displayName = context.anonymous ? '🕶️ Anonymous' : `👤 ${context.name}`;
-        const loginEnabled = ldclient.variation(FLAGS.enableUserLogin, true);
+        const loginEnabled = flagState.enableUserLogin;
         
         let headerButtons = '';
         if (context.anonymous) {
@@ -1050,8 +1091,8 @@
           </div>`;
         
         // Show saved locations for logged-in users if flag is enabled
-        const canSaveLocations = ldclient.variation(FLAGS.saveLocations, false);
-        const rememberLocation = ldclient.variation(FLAGS.rememberLocation, false);
+        const canSaveLocations = flagState.saveLocations;
+        const rememberLocation = flagState.rememberLocation;
         if (!context.anonymous && context.email && canSaveLocations) {
           const savedLocations = getSavedLocations(context.email);
           const defaultLoc = getDefaultLocation(context.email);
@@ -1291,8 +1332,7 @@
             weatherData = await fetchWeather(city);
             // Only save location for logged-in users with remember-location enabled
             if (!context.anonymous && context.email) {
-              const rememberLocation = ldclient.variation(FLAGS.rememberLocation, false);
-              if (rememberLocation) {
+              if (flagState.rememberLocation) {
                 setCurrentLocation(context.email, weatherData.city);
               }
             }
@@ -1328,8 +1368,7 @@
           weatherData = await fetchWeather(city);
           // Only save location for logged-in users with remember-location enabled
           if (!context.anonymous && context.email) {
-            const rememberLocation = ldclient.variation(FLAGS.rememberLocation, false);
-            if (rememberLocation) {
+            if (flagState.rememberLocation) {
               setCurrentLocation(context.email, city);
             }
           }
@@ -1354,7 +1393,7 @@
         
         // Override loginFromAnonymous to show login screen instead of reloading
         window.loginFromAnonymous = function() {
-          console.log('[LD Context] Anonymous user requesting login screen');
+          log('[LD Context] Anonymous user requesting login screen');
           // Get the current anonymous context from the client
           const anonContext = ldclient.getContext();
           // Show the login screen with the current client and context
@@ -1363,7 +1402,7 @@
         
         // Override logout to re-identify as anonymous and show login screen
         window.logout = async function() {
-          console.log('[LD Context] User logging out, switching to anonymous');
+          log('[LD Context] User logging out, switching to anonymous');
           localStorage.removeItem('weatherAppCurrentUser');
           localStorage.removeItem('weatherAppAnonymous');
           
@@ -1379,7 +1418,7 @@
           
           // Re-identify as anonymous
           await ldclient.identify(anonContext);
-          console.log('[LD Context] Re-identified as anonymous');
+          log('[LD Context] Re-identified as anonymous');
           
           // Update global context
           context = anonContext;
@@ -1390,7 +1429,7 @@
         
         // Override switchToUser to re-identify and continue in app
         window.switchToUser = async function(email) {
-          console.log('[LD Context] Switching to user:', email);
+          log('[LD Context] Switching to user:', email);
           setCurrentUser(email);
           localStorage.removeItem('weatherAppAnonymous'); // Clear anonymous flag
           const user = getAllUsers().find(u => u.email === email);
@@ -1412,7 +1451,7 @@
             
             // Re-identify as the new user
             await ldclient.identify(newContext);
-            console.log('[LD Context] Re-identified as user:', user.email);
+            log('[LD Context] Re-identified as user:', user.email);
             
             // Update global context
             context = newContext;
@@ -1430,7 +1469,7 @@
         
         // Override switchToAnonymous to re-identify and continue in app
         window.switchToAnonymous = async function() {
-          console.log('[LD Context] Switching to anonymous');
+          log('[LD Context] Switching to anonymous');
           localStorage.removeItem('weatherAppCurrentUser');
           localStorage.setItem('weatherAppAnonymous', 'true');
           
@@ -1446,7 +1485,7 @@
           
           // Re-identify as anonymous
           await ldclient.identify(anonContext);
-          console.log('[LD Context] Re-identified as anonymous');
+          log('[LD Context] Re-identified as anonymous');
           
           // Update global context
           context = anonContext;
@@ -1516,7 +1555,7 @@
       
       // Track Web Vitals and send to LaunchDarkly Observability
       function sendWebVitalToObservability(metric) {
-        console.log(`Web Vital - ${metric.name}:`, metric.value);
+        log(`Web Vital - ${metric.name}:`, metric.value);
         
         if (observePlugin && observePlugin.observe) {
           observePlugin.observe.recordHistogram({
@@ -1525,21 +1564,21 @@
             attributes: {
               rating: metric.rating,
               navigationType: metric.navigationType || 'unknown',
-              useFahrenheit: ldclient.variation(FLAGS.temperatureScale, false),
-              showAirQuality: ldclient.variation(FLAGS.showAirQuality, false),
-              showForecast: ldclient.variation(FLAGS.showForecast, false)
+              useFahrenheit: flagState.temperatureScale,
+              showAirQuality: flagState.showAirQuality,
+              showForecast: flagState.showForecast
             }
           });
-          console.log(`✓ Sent ${metric.name} to LaunchDarkly Observability`);
+          log(`✓ Sent ${metric.name} to LaunchDarkly Observability`);
         } else {
-          console.warn(`✗ observePlugin.observe not available for ${metric.name}`);
+          warn(`✗ observePlugin.observe not available for ${metric.name}`);
         }
       }
 
       // Wait for SDK to be ready, then render
       if (isReady) {
         // Client is already ready (after identify), render immediately
-        console.log('SDK already ready, rendering immediately');
+        log('SDK already ready, rendering immediately');
         render();
         scheduleWeatherRefresh();
         
@@ -1553,7 +1592,7 @@
       } else {
         // Client is not ready yet, wait for it
         ldclient.waitUntilReady().then(() => {
-          console.log('SDK ready in initWeatherApp, rendering now');
+          log('SDK ready in initWeatherApp, rendering now');
           render();
           scheduleWeatherRefresh();
           
@@ -1565,7 +1604,7 @@
           onFCP(sendWebVitalToObservability);  // First Contentful Paint
           onTTFB(sendWebVitalToObservability); // Time to First Byte
         }).catch((error) => {
-          console.error('SDK failed to become ready in initWeatherApp:', error);
+          error('SDK failed to become ready in initWeatherApp:', error);
           appContent.innerHTML = '<p class="loading">Failed to load weather app</p>';
         });
       }

@@ -4,6 +4,7 @@
  */
 
 import { getLocations } from './locationStorage.js';
+import { log } from './logger.js';
 
 /**
  * Announce message to screen readers
@@ -40,7 +41,7 @@ function announceToScreenReader(message, priority = 'polite') {
     liveRegion.textContent = message;
   }, 100);
   
-  console.log('[View State] Screen reader announcement:', message);
+  log('[View State] Screen reader announcement:', message);
 }
 
 /**
@@ -72,7 +73,7 @@ export function setUserContext(user) {
     email: user.email || null,
     isAnonymous: user.isAnonymous !== false
   };
-  console.log('[View State] User context set:', viewState.user);
+  log('[View State] User context set:', viewState.user);
 }
 
 /**
@@ -88,24 +89,24 @@ export function determineView(user, locationCount, ldClient = null) {
   
   // If save-locations flag is false, always show detail view
   if (!canSaveLocations) {
-    console.log('[View State] save-locations flag disabled - detail view');
+    log('[View State] save-locations flag disabled - detail view');
     return 'detail';
   }
   
   // Anonymous users always see detail view
   if (user.isAnonymous) {
-    console.log('[View State] Anonymous user - detail view');
+    log('[View State] Anonymous user - detail view');
     return 'detail';
   }
   
   // Named users with 2+ locations see list view
   if (locationCount >= 2) {
-    console.log('[View State] Multiple locations - list view');
+    log('[View State] Multiple locations - list view');
     return 'list';
   }
   
   // Named users with 0 or 1 location see detail view
-  console.log('[View State] Single or no locations - detail view');
+  log('[View State] Single or no locations - detail view');
   return 'detail';
 }
 
@@ -133,7 +134,7 @@ function updateURLState(view, locationId = null) {
   } else {
     window.location.hash = '';
   }
-  console.log('[View State] URL updated:', window.location.hash);
+  log('[View State] URL updated:', window.location.hash);
 }
 
 /**
@@ -141,7 +142,7 @@ function updateURLState(view, locationId = null) {
  * @param {Function} renderCallback - Optional callback to render the list view
  */
 export function transitionToListView(renderCallback) {
-  console.log('[View State] Transition:', { from: viewState.currentView, to: 'list' });
+  log('[View State] Transition:', { from: viewState.currentView, to: 'list' });
   
   viewState.currentView = 'list';
   viewState.selectedLocationId = null;
@@ -162,7 +163,7 @@ export function transitionToListView(renderCallback) {
  * @param {Function} renderCallback - Optional callback to render the detail view
  */
 export function transitionToDetailView(locationId, renderCallback) {
-  console.log('[View State] Transition:', { 
+  log('[View State] Transition:', { 
     from: viewState.currentView, 
     to: 'detail', 
     locationId 
@@ -209,7 +210,7 @@ export function setupHistoryNavigation(listViewCallback, detailViewCallback) {
       if (detailViewCallback) detailViewCallback(locationId);
     }
     
-    console.log('[View State] History navigation:', viewState);
+    log('[View State] History navigation:', viewState);
   });
 }
 
@@ -239,7 +240,7 @@ export function setupKeyboardShortcuts(backCallback) {
           const locations = getLocations(userEmail);
           if (locations.length >= 2) {
             event.preventDefault();
-            console.log('[View State] Keyboard shortcut triggered: back navigation');
+            log('[View State] Keyboard shortcut triggered: back navigation');
             if (backCallback && typeof backCallback === 'function') {
               backCallback();
             }
@@ -249,7 +250,7 @@ export function setupKeyboardShortcuts(backCallback) {
     }
   });
   
-  console.log('[View State] Keyboard shortcuts enabled (Escape or Alt+Left for back)');
+  log('[View State] Keyboard shortcuts enabled (Escape or Alt+Left for back)');
 }
 
 /**

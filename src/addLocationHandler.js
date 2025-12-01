@@ -5,6 +5,7 @@
 
 import { saveLocation, locationExists } from './locationStorage.js';
 import { showLocationSuccess, showLocationError } from './errorHandler.js';
+import { warn } from './logger.js';
 
 /**
  * Create and attach save location button to the UI
@@ -189,7 +190,7 @@ export function attachSaveLocationButton(context, weatherData, ldClient, onSaveS
   // Find the location selector container
   const locationSelector = document.querySelector('.location-selector');
   if (!locationSelector) {
-    console.warn('[Add Location] Location selector not found in DOM');
+    warn('[Add Location] Location selector not found in DOM');
     return;
   }
   

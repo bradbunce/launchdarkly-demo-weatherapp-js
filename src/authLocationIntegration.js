@@ -6,6 +6,7 @@
 
 import { loadLocations, getLocations } from './locationStorage.js';
 import { setUserContext, determineView, resetViewState } from './viewStateManager.js';
+import { log, warn } from './logger.js';
 
 /**
  * Check if user is named (not anonymous)
@@ -33,7 +34,7 @@ export function isAnonymousUser(context) {
  */
 export function verifyAuthentication(context, operation = 'location operation') {
   if (isAnonymousUser(context)) {
-    console.warn(`[Auth Integration] ${operation} blocked: user is anonymous`);
+    warn(`[Auth Integration] ${operation} blocked: user is anonymous`);
     return false;
   }
   return true;
@@ -47,11 +48,11 @@ export function verifyAuthentication(context, operation = 'location operation') 
  * @returns {Object} Login result with locations and view
  */
 export function handleLogin(context, ldClient, onLoginComplete) {
-  console.log('[Auth Integration] Handling login:', { email: context.email });
+  log('[Auth Integration] Handling login:', { email: context.email });
   
   // Verify user is named
   if (isAnonymousUser(context)) {
-    console.warn('[Auth Integration] Login failed: user is anonymous');
+    warn('[Auth Integration] Login failed: user is anonymous');
     return {
       success: false,
       error: 'User is anonymous'
@@ -77,7 +78,7 @@ export function handleLogin(context, ldClient, onLoginComplete) {
     ldClient
   );
   
-  console.log('[Auth Integration] Login complete:', {
+  log('[Auth Integration] Login complete:', {
     email: context.email,
     locationCount: locations.length,
     view,
@@ -107,7 +108,7 @@ export function handleLogin(context, ldClient, onLoginComplete) {
  * @returns {Object} Logout result
  */
 export function handleLogout(onLogoutComplete) {
-  console.log('[Auth Integration] Handling logout');
+  log('[Auth Integration] Handling logout');
   
   // Note: We do NOT delete locations from localStorage
   // They are preserved for when the user logs back in
@@ -121,7 +122,7 @@ export function handleLogout(onLogoutComplete) {
   // Reset view to detail (anonymous users always see detail view)
   resetViewState();
   
-  console.log('[Auth Integration] Logout complete: locations preserved, UI hidden');
+  log('[Auth Integration] Logout complete: locations preserved, UI hidden');
   
   // Execute callback if provided
   if (onLogoutComplete && typeof onLogoutComplete === 'function') {
@@ -160,7 +161,7 @@ export function shouldShowLocationManagementUI(context, ldClient) {
  * This should be called when user logs out or becomes anonymous
  */
 export function hideLocationManagementUI() {
-  console.log('[Auth Integration] Hiding location management UI');
+  log('[Auth Integration] Hiding location management UI');
   
   // Hide save location button
   const saveBtn = document.getElementById('save-location-btn');
@@ -205,7 +206,7 @@ export function showLocationManagementUI(context, ldClient) {
     return;
   }
   
-  console.log('[Auth Integration] Showing location management UI');
+  log('[Auth Integration] Showing location management UI');
   
   // Show save location button (if it exists)
   const saveBtn = document.getElementById('save-location-btn');
@@ -240,7 +241,7 @@ export function showLocationManagementUI(context, ldClient) {
  * @param {Object} callbacks - Callbacks for login/logout events
  */
 export function initializeAuthIntegration(context, ldClient, callbacks = {}) {
-  console.log('[Auth Integration] Initializing with context:', {
+  log('[Auth Integration] Initializing with context:', {
     email: context?.email,
     anonymous: context?.anonymous
   });
@@ -263,7 +264,7 @@ export function initializeAuthIntegration(context, ldClient, callbacks = {}) {
   if (ldClient && callbacks.onFlagChange) {
     ldClient.on('change:save-locations', () => {
       const newFlagValue = ldClient.variation('save-locations', false);
-      console.log('[Auth Integration] save-locations flag changed:', newFlagValue);
+      log('[Auth Integration] save-locations flag changed:', newFlagValue);
       
       // Call the flag change callback
       callbacks.onFlagChange(newFlagValue);
